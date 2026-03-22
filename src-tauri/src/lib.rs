@@ -8,6 +8,9 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::thread;
 use std::time::UNIX_EPOCH;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter, State, Manager};
 use tauri_plugin_dialog::DialogExt;
 
@@ -249,7 +252,13 @@ fn validate_startup_abs(root: &Path, startup_rel: &str) -> Result<PathBuf, Strin
     }
 }
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 fn run_capture(mut cmd: Command) -> Result<CommandResult, String> {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
     let output = cmd.output().map_err(|e| format!("Không chạy được command: {e}"))?;
     Ok(CommandResult {
         code: output.status.code().unwrap_or(-1),
@@ -366,7 +375,11 @@ fn copy_alias_exe_and_config(
     // Cho phép source exe nằm ngoài project root vì nhiều `.csproj` cấu hình xuất ra thư mục chung (vd: ..\..\batch\EXE\)
     
     // Ensure the destination file is not in use before copying
-    let _ = Command::new("taskkill")
+    let mut kill_cmd = Command::new("taskkill");
+    #[cfg(windows)]
+    kill_cmd.creation_flags(CREATE_NO_WINDOW);
+    
+    let _ = kill_cmd
         .args(&["/F", "/IM", &final_alias])
         .output();
     // A small delay to ensure the OS has released the file handles
