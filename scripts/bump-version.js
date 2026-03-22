@@ -16,11 +16,20 @@ function bump() {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
   const tauri = JSON.parse(fs.readFileSync(tauriPath, "utf-8"));
 
-  if (!newVersion) {
+  const semverRegex = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+  const isInvalidVersion = !newVersion || !semverRegex.test(newVersion);
+
+  if (isInvalidVersion) {
     // Auto increment patch version
-    const parts = pkg.version.split(".").map(Number);
-    parts[2] += 1;
-    newVersion = parts.join(".");
+    const versionToUse = pkg.version || "0.0.0";
+    const parts = versionToUse.split(".").map(Number);
+    if (parts.length < 3) {
+      newVersion = "0.1.0"; // Default fallback
+    } else {
+      parts[2] += 1;
+      newVersion = parts.join(".");
+    }
+    console.log(`ℹ️ No valid version provided. Auto-incrementing to v${newVersion}`);
   }
 
   // Update package.json
