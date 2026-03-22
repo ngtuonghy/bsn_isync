@@ -1,0 +1,10 @@
+@import "./index.css";
+@import "tailwindcss";
+@import "tw-animate-css";
+
+.btn-primary {
+  @apply inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground px-4 py-2 font-medium hover:opacity-90;
+}
+.btn-secondary {
+  @apply inline-flex items-center justify-center rounded-md bg-muted text-muted-foreground px-4 py-2 font-medium hover:opacity-90;
+}
