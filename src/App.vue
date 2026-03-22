@@ -111,8 +111,9 @@ const canTest = computed(() => {
 });
 
 const canRun = computed(() => {
-  return !runner.running && runner.projectRoot && runner.startupProject && runner.aliasExeName;
+  return !runner.running && runner.projectRoot && runner.startupProject && runner.aliasExeName && runner.batFilePath;
 });
+
 
 function toggleConfig() {
   isConfigCollapsed.value = !isConfigCollapsed.value;
@@ -582,6 +583,7 @@ const isEditingProfileName = ref(false);
 const editableProfileName = ref("");
 
 let unlistenRunnerLog: (() => void) | undefined;
+let unlistenBuildStatus: (() => void) | undefined;
 let runnerPollTimer: number | undefined;
 
 const runner = reactive({
@@ -599,6 +601,7 @@ const runner = reactive({
   sqlUser: "",
   sqlPassword: "",
   useWindowsAuth: true,
+  buildStatus: null as string | null,
   configTemplate: `<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <configSections>
@@ -609,7 +612,7 @@ const runner = reactive({
   </startup>
   <appSettings>
     <add key="Job.MsmqName" value="JE5912" />
-    <add key="Job.BatFilePath" value="" />
+    <add key="Job.BatFilePath" value=".\" />
     <add key="Job.SyncMode" value="sync" />
     <add key="Execute.EnvId" value="Arkbell_Dev" />
     <add key="ClientSettingsProvider.ServiceUri" value="" />
@@ -631,7 +634,7 @@ const runner = reactive({
 
 // --- Autosave logic ---
 watch(() => {
-  const { running, loadingTarget, logs, childPid, ...rest } = runner;
+  const { running, loadingTarget, logs, childPid, buildStatus, ...rest } = runner;
   return rest;
 }, (newVal, oldVal) => {
   // Only autosave if essential fields changed (exclude running state)
@@ -685,7 +688,7 @@ watch(() => [runner.aliasExeName, runner.batFilePath], () => {
   // Replace Job.MsmqName value
   tpl = tpl.replace(/(<add key="Job\.MsmqName" value=")([^"]*)(" \/>)/, `$1${msmq}$3`);
   // Replace Job.BatFilePath value
-  tpl = tpl.replace(/(<add key="Job\.BatFilePath" value=")([^"]*)(" \/>)/, `$1${runner.batFilePath}$3`);
+  tpl = tpl.replace(/(<add key="Job\.BatFilePath" value=")([^"]*)(" \/>)/, `$1${runner.batFilePath || '.\\' }$3`);
   
   runner.configTemplate = tpl;
 });
@@ -1061,8 +1064,21 @@ function applySelectedProject() {
 
 async function runDotnetAndCollect(mode: "restore" | "build") {
   const config = runner.config || "Debug";
+  
+  // Extract project directory and filename
+  const projectPath = runner.startupProject.replace(/\\/g, '/');
+  const lastSlash = projectPath.lastIndexOf('/');
+  const projectDir = lastSlash !== -1 
+    ? runner.projectRoot + '\\' + runner.startupProject.substring(0, lastSlash).replace(/\//g, '\\')
+    : runner.projectRoot;
+  const projectFile = lastSlash !== -1
+    ? runner.startupProject.substring(lastSlash + 1)
+    : runner.startupProject;
+
   // We use pty_write for building to show progress in main terminal
-  const cmd = `dotnet ${mode} "${runner.startupProject}" -c ${config}\r`;
+  // Auto cd to project root for build/rebuild
+  await invoke("pty_write", { id: "main", data: `cd '${projectDir}'\r` });
+  const cmd = `dotnet ${mode} "${projectFile}" -c ${config}\r`;
   await invoke("pty_write", { id: "main", data: cmd });
 }
 
@@ -1305,6 +1321,15 @@ onMounted(async () => {
     }
   });
 
+  unlistenBuildStatus = await listen<string>("build-status", (event) => {
+    runner.buildStatus = event.payload;
+    if (event.payload === "done") {
+      setTimeout(() => {
+        if (runner.buildStatus === "done") runner.buildStatus = null;
+      }, 1500);
+    }
+  });
+
   listen("pty-out", (event: any) => {
     const payload = event.payload;
     const { id, data } = payload;
@@ -1337,6 +1362,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (unlistenRunnerLog) unlistenRunnerLog();
+  if (unlistenBuildStatus) unlistenBuildStatus();
   if (runnerPollTimer) window.clearInterval(runnerPollTimer);
 });
 </script>
@@ -1665,10 +1691,6 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/20" v-if="runner.running">
-          <span class="flex h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse"></span>
-          <span class="text-[9px] font-bold text-green-500 uppercase">Live</span>
-        </div>
         <div class="flex items-center gap-1 border-l ml-1 pl-1">
           <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-muted-foreground hover:text-primary transition-colors" title="Jump to Project Root" @click="cdToRoot">
             <Home class="size-3" />
@@ -1677,6 +1699,7 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
 
     <div class="flex-1 flex flex-row min-h-0 bg-card relative">
       <!-- Main Shell Viewport -->
@@ -1706,21 +1729,29 @@ onUnmounted(() => {
                       <!-- Control Buttons -->
                       <Button variant="ghost" 
                               class="w-12 h-11 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-90"
-                              :class="!canBuild ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50'"
-                              :disabled="!canBuild || runner.loadingTarget === 'build'"
+                              :class="((runner.buildStatus || runner.loadingTarget === 'build') ? '' : (!canBuild || runner.loadingTarget || runner.buildStatus) ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50')"
+                              :disabled="!canBuild || !!runner.loadingTarget || !!runner.buildStatus"
                               @click="dotnet('build')">
-                        <component :is="runner.loadingTarget === 'build' ? RotateCcw : Hammer" 
-                                   :class="[
-                                     'size-4 transition-transform duration-300',
-                                     runner.loadingTarget === 'build' ? 'animate-spin' : 'group-hover/btn:rotate-12'
-                                   ]" />
-                        <span class="text-[8px] uppercase tracking-wide font-semibold">{{ runner.loadingTarget === 'build' ? '...' : 'Build' }}</span>
+                        <div :class="runner.buildStatus ? 'animate-hammer-grow' : ''">
+                          <component :is="runner.loadingTarget === 'build' ? RotateCcw : Hammer" 
+                                     :class="[
+                                       'size-4 transition-all duration-300',
+                                       runner.loadingTarget === 'build' ? 'animate-spin' : '',
+                                       runner.buildStatus ? 'animate-hammer-hit animate-glow-vibrant text-[#FC6400]' : 'group-hover/btn:rotate-12 text-zinc-500'
+                                     ]" />
+                        </div>
+                        <!-- Spark Particle -->
+                        <div v-if="runner.buildStatus" class="absolute size-4 bg-[#FAC000]/40 rounded-full animate-spark-pop blur-sm z-0"></div>
+                        <span class="text-[7.5px] uppercase tracking-tighter font-bold transition-all duration-300" 
+                              :class="runner.buildStatus ? 'text-[#FF7500] animate-pulse scale-110' : 'text-zinc-600'">
+                          {{ runner.loadingTarget === 'build' ? '...' : (runner.buildStatus ? 'Building' : 'Build') }}
+                        </span>
                       </Button>
                       
                       <Button variant="ghost" 
                               class="w-12 h-11 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-90"
-                              :class="!canBuild ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50'"
-                              :disabled="!canBuild || runner.loadingTarget === 'rebuild'"
+                              :class="(runner.loadingTarget === 'rebuild') ? 'text-zinc-200' : (!canBuild || runner.loadingTarget || runner.buildStatus) ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50'"
+                              :disabled="!canBuild || !!runner.loadingTarget || !!runner.buildStatus"
                               @click="rebuild">
                         <RotateCcw :class="[
                                      'size-4 transition-transform duration-300',
@@ -1733,10 +1764,10 @@ onUnmounted(() => {
 
                       <Button variant="ghost" 
                               class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95" 
-                              :class="canTest 
+                              :class="((canTest && runner.loadingTarget === 'bat') ? 'text-blue-500' : (canTest && !runner.loadingTarget && !runner.buildStatus) 
                                 ? 'text-blue-500 hover:text-blue-400 hover:bg-blue-500/10 shadow-[0_0_15px_rgba(59,130,246,0.1)]' 
-                                : 'text-zinc-700 cursor-not-allowed opacity-40'"
-                              :disabled="!canTest || runner.loadingTarget === 'bat'"
+                                : 'text-zinc-700 cursor-not-allowed opacity-40')"
+                              :disabled="!canTest || !!runner.loadingTarget || !!runner.buildStatus"
                               @click="dotnet('run', 'bat')">
                         <component :is="runner.loadingTarget === 'bat' ? RotateCcw : Beaker"
                                    :class="[
@@ -1749,13 +1780,13 @@ onUnmounted(() => {
                       <Button v-if="!runner.running"
                               variant="ghost" 
                               class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95 text-green-500" 
-                              :class="!canRun || runner.loadingTarget === 'exe' ? 'opacity-30 cursor-not-allowed grayscale' : 'hover:text-green-400 hover:bg-green-500/10'"
-                              :disabled="!canRun || runner.loadingTarget === 'exe'"
+                              :class="(runner.loadingTarget === 'exe') ? 'opacity-100' : (!canRun || runner.loadingTarget || runner.buildStatus) ? 'opacity-30 cursor-not-allowed grayscale' : 'hover:text-green-400 hover:bg-green-500/10'"
+                              :disabled="!canRun || !!runner.loadingTarget || !!runner.buildStatus"
                               @click="dotnet('run', 'exe')">
                         <component :is="runner.loadingTarget === 'exe' ? RotateCcw : Play"
                                    :class="[
-                                     'size-5 fill-current transition-transform duration-300',
-                                     runner.loadingTarget === 'exe' ? 'animate-spin' : 'group-hover/btn:scale-110'
+                                     'size-5 transition-transform duration-300',
+                                     runner.loadingTarget === 'exe' ? 'animate-spin' : 'fill-current group-hover/btn:scale-110'
                                    ]" />
                         <span class="text-[8px] uppercase tracking-wide font-bold">{{ runner.loadingTarget === 'exe' ? '...' : 'Run' }}</span>
                       </Button>

@@ -365,6 +365,13 @@ fn copy_alias_exe_and_config(
     let src_canon = fs::canonicalize(&src).map_err(|e| format!("Không tìm thấy file exe sau build: {e}"))?;
     // Cho phép source exe nằm ngoài project root vì nhiều `.csproj` cấu hình xuất ra thư mục chung (vd: ..\..\batch\EXE\)
     
+    // Ensure the destination file is not in use before copying
+    let _ = Command::new("taskkill")
+        .args(&["/F", "/IM", &final_alias])
+        .output();
+    // A small delay to ensure the OS has released the file handles
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
     fs::copy(&src_canon, &dst).map_err(|e| format!("Copy exe sang alias thất bại: {e}"))?;
     let config_path = dst.with_extension("exe.config");
     let template = config_template
@@ -657,11 +664,14 @@ fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> {
 fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
     let root = normalize_input_path(&request.project_root);
     let startup_abs = validate_startup_abs(&root, &request.startup_project)?;
+    let project_dir = startup_abs.parent().unwrap();
+    let startup_file = startup_abs.file_name().unwrap();
+
     let mut restore = Command::new("dotnet");
     restore
-        .current_dir(&root)
+        .current_dir(project_dir)
         .arg("restore")
-        .arg(&startup_abs);
+        .arg(startup_file);
     let restore_out = run_capture(restore)?;
     if restore_out.code != 0 {
         return Ok(CommandResult {
@@ -673,9 +683,9 @@ fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
     let config = get_build_config(request.build_config.as_ref());
     let mut build = Command::new("dotnet");
     build
-        .current_dir(&root)
+        .current_dir(project_dir)
         .arg("build")
-        .arg(&startup_abs)
+        .arg(startup_file)
         .arg("-c")
         .arg(&config);
     let mut build_out = run_capture(build)?;
@@ -744,6 +754,9 @@ fn dotnet_run_start(
     let config = get_build_config(request.build_config.as_ref());
     let source_fp = project_source_fingerprint(&startup_abs)?;
     let state_key = normalize_path(&startup_abs);
+    
+    let is_bat = request.target.as_deref().unwrap_or("exe") == "bat";
+    
     {
         let mut guard = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
         if let Some(mut child) = guard.child.take() {
@@ -751,41 +764,77 @@ fn dotnet_run_start(
             let _ = child.wait();
         }
         let previous_fp = guard.fingerprints.get(&state_key).copied().unwrap_or(0);
-        if previous_fp != source_fp {
-            let _ = app.emit("runner-log", "🔄 Source changed, auto rebuild...");
+        
+        // Define common binary location
+        let project_dir = startup_abs.parent().unwrap();
+        let startup_file_name = startup_abs.file_name().unwrap().to_str().unwrap();
+        let source_exe_name = startup_file_name.replace(".csproj", ".exe");
+        let source_exe_path = project_dir.join("bin").join(&config).join(&source_exe_name);
+
+        if is_bat {
+            // For tests, just build the target project directly
+            let _ = app.emit("build-status", "building");
+            let _ = app.emit("runner-log", format!("[BUILD] Building target project for test: {}...", startup_file_name));
+            drop(guard);
+            
+            let mut build = Command::new("dotnet");
+            build.current_dir(project_dir).arg("build").arg(startup_file_name).arg("-c").arg(&config);
+            let build_out = run_capture(build)?;
+            
+            if build_out.code != 0 {
+                let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
+                return Err(format!("Build failed, exit code {}", build_out.code));
+            }
+            let _ = app.emit("build-status", "done");
+            let _ = app.emit("runner-log", "[BUILD] Target project built successfully.");
+        } else if previous_fp != source_fp || !source_exe_path.exists() {
+            // Smart build for EXE target
+            let _ = app.emit("build-status", "building");
+            let _ = app.emit("runner-log", "[BUILD] Rebuilding project...");
             drop(guard);
             let mut build = Command::new("dotnet");
             build
-                .current_dir(&root)
+                .current_dir(project_dir)
                 .arg("build")
-                .arg(&startup_abs)
+                .arg(startup_file_name)
                 .arg("-c")
                 .arg(&config);
             let build_out = run_capture(build)?;
             if !build_out.stdout.trim().is_empty() {
-                let _ = app.emit("runner-log", build_out.stdout.clone());
+                for line in build_out.stdout.lines() {
+                     let _ = app.emit("runner-log", format!("  {}", line));
+                }
             }
             if !build_out.stderr.trim().is_empty() {
-                let _ = app.emit("runner-log", format!("ERR: {}", build_out.stderr));
+                for line in build_out.stderr.lines() {
+                     let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
+                }
             }
             if build_out.code != 0 {
-                return Err(format!("Auto rebuild thất bại, exit code {}", build_out.code));
+                let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
+                return Err(format!("Build failed, exit code {}", build_out.code));
             }
             
             let mut target_abs = startup_abs.clone();
             if let Some(rba) = get_receive_batch_action(&startup_abs) {
-                let _ = app.emit("runner-log", "🔄 Source changed, auto rebuild ReceiveBatchAction...");
+                let _ = app.emit("build-status", "building_rba");
+                let _ = app.emit("runner-log", "[UPDATE] Updating ReceiveBatchAction...");
                 let mut rba_build = Command::new("dotnet");
                 rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
                 let rba_out = run_capture(rba_build)?;
                 if !rba_out.stdout.trim().is_empty() {
-                    let _ = app.emit("runner-log", rba_out.stdout.clone());
+                    for line in rba_out.stdout.lines() {
+                        let _ = app.emit("runner-log", format!("  {}", line));
+                    }
                 }
                 if !rba_out.stderr.trim().is_empty() {
-                    let _ = app.emit("runner-log", format!("ERR (RBA): {}", rba_out.stderr));
+                     for line in rba_out.stderr.lines() {
+                        let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
+                    }
                 }
                 if rba_out.code != 0 {
-                    return Err(format!("Auto rebuild ReceiveBatchAction thất bại, exit code {}", rba_out.code));
+                    let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction failed (code {})", rba_out.code));
+                    return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
                 }
                 target_abs = rba;
             }
@@ -801,6 +850,7 @@ fn dotnet_run_start(
             }
             let mut guard2 = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
             guard2.fingerprints.insert(state_key.clone(), source_fp);
+            let _ = app.emit("build-status", "done");
         }
     }
 
@@ -808,6 +858,15 @@ fn dotnet_run_start(
     if let Some(rba) = get_receive_batch_action(&startup_abs) {
         target_abs = rba;
     }
+
+    // Always try to update/copy alias and config before running
+    let _ = copy_alias_exe_and_config(
+        &root,
+        &target_abs,
+        &config,
+        request.alias_exe_name.as_ref(),
+        request.config_template.as_ref(),
+    );
 
     let alias = request.alias_exe_name
         .as_ref()

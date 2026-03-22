@@ -49,6 +49,37 @@
       transform: rotate(360deg);
     }
   }
+
+  --animate-hammer-hit: hammer-hit 0.6s cubic-bezier(0.35, 0, 0.65, 1) infinite;
+  @keyframes hammer-hit {
+    0% { transform: rotate(0deg) scale(1); }
+    15% { transform: rotate(-65deg) scale(1.25); }
+    30% { transform: rotate(25deg) scale(0.75); }
+    45% { transform: rotate(-12deg) scale(1.1); }
+    60% { transform: rotate(0deg) scale(1); }
+    100% { transform: rotate(0deg) scale(1); }
+  }
+
+  --animate-hammer-grow: hammer-grow 5s ease-out forwards;
+  @keyframes hammer-grow {
+    0% { transform: scale(0.95); }
+    100% { transform: scale(1.25); }
+  }
+
+  --animate-spark-pop: spark-pop 0.6s ease-out infinite;
+  @keyframes spark-pop {
+    0%, 34% { opacity: 0; transform: scale(0) translateY(0); }
+    35% { opacity: 1; transform: scale(1.5) translateY(-2px); filter: blur(0px); }
+    55% { opacity: 0; transform: scale(3) translateY(-10px); filter: blur(4px); }
+    100% { opacity: 0; }
+  }
+
+  --animate-glow-vibrant: glow-vibrant 1.5s ease-in-out infinite;
+  @keyframes glow-vibrant {
+    0%, 100% { filter: drop-shadow(0 0 2px #D73502) brightness(1); }
+    35% { filter: drop-shadow(0 0 15px #FF7500) brightness(1.5); }
+    50% { filter: drop-shadow(0 0 8px #FAC000) brightness(1.2); }
+  }
 }
 
 :root {
