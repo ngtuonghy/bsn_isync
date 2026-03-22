@@ -1343,9 +1343,12 @@ onUnmounted(() => {
       <div class="px-6 py-2.5 flex items-center justify-between">
         <div class="flex items-center gap-2">
           <div class="h-7 w-7 rounded-md bg-primary text-primary-foreground grid place-items-center text-xs font-semibold">IS</div>
-          <div class="flex items-baseline gap-2">
-            <div class="text-sm font-semibold">BSN iSync</div>
-            <span class="text-[11px] text-muted-foreground">v{{ APP_VERSION }}</span>
+          <div class="flex flex-col select-none">
+            <div class="flex items-baseline gap-2">
+              <div class="text-sm font-semibold tracking-tight">BSN iSync</div>
+              <span class="text-[11px] text-muted-foreground font-medium uppercase tracking-tighter">v{{ APP_VERSION }}</span>
+            </div>
+            <span class="text-[8px] font-bold bg-linear-to-r from-blue-500 to-cyan-500 bg-clip-text text-transparent drop-shadow-[0_0_8px_rgba(59,130,246,0.2)] uppercase tracking-widest leading-none mt-0.5">by ngtuonghy</span>
           </div>
         </div>
         <div class="flex items-center gap-2">

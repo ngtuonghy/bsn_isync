@@ -36,7 +36,7 @@ function bump() {
   // Update docs/index.html
   if (fs.existsSync(docsPath)) {
     let docs = fs.readFileSync(docsPath, "utf-8");
-    const versionRegex = /(Phiên bản mới nhất: v)[0-9.]+/g;
+    const versionRegex = /(Phiên bản mới nhất:.*?v)[0-9.]+/g;
     docs = docs.replace(versionRegex, `$1${newVersion}`);
     fs.writeFileSync(docsPath, docs);
     console.log(`✅ Updated docs/index.html to v${newVersion}`);
