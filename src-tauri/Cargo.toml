@@ -30,3 +30,4 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 portable-pty = "0.8.1"
 tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
+urlencoding = "2.1"

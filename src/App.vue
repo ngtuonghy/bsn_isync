@@ -3,7 +3,7 @@ declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
-import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle } from "lucide-vue-next";
+import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
@@ -32,8 +32,14 @@ import { Textarea } from "@/components/ui/textarea";
 import BacklogAuthPanel from "@/components/backlog/BacklogAuthPanel.vue";
 import {
   fetchBacklogProfileWithToken,
-  buildBacklogOAuthAuthorizeUrl,
+  fetchBacklogProjects,
+  fetchBacklogIssueTypes,
+  fetchBacklogIssues,
   type BacklogProfile,
+  type BacklogProject,
+  type BacklogIssueType,
+  type BacklogIssue,
+  type BacklogOAuthToken,
 } from "@/lib/backlogAuth";
 import "./index.css";
 import { Terminal } from 'xterm';
@@ -150,6 +156,10 @@ type ProjectProfile = {
   useWindowsAuth?: boolean;
   configTemplate: string;
   sync?: any;
+  backlogProjectKey?: string;
+  backlogIssueTypeId?: number;
+  backlogIssueKey?: string;
+  backlogIssueSummary?: string;
 };
 
 const discoveredProjects = ref<Array<{
@@ -163,8 +173,8 @@ const selectedProjectRoot = ref("");
 const setupProfiles = ref<ProjectProfile[]>([]);
 const selectedSetupId = ref("");
 
-const currentUser = ref("ngtuonghy");
-const selectedOwner = ref("ngtuonghy");
+const currentUser = computed(() => backlog.profile?.name || backlog.profile?.userId || "");
+const selectedOwner = ref("");
 const profileSearch = ref("");
 const profileScope = ref<"personal" | "shared" | "team">("personal");
 
@@ -176,23 +186,21 @@ const backlog = reactive({
   status: "idle" as "idle" | "loading" | "success" | "error",
   error: "",
   profile: null as BacklogProfile | null,
+  token: null as any, // Will store { access_token, refresh_token, expires_in, expires_at, ... }
+  projects: [] as BacklogProject[],
+  issueTypes: [] as BacklogIssueType[],
+  issues: [] as BacklogIssue[],
+});
+
+const backlogIssueUrl = computed(() => {
+  if (!backlog.host || !runner.runArgs) return undefined;
+  return `https://${backlog.host}/view/${runner.runArgs}`;
 });
 
 
-const envHost = import.meta.env.VITE_BACKLOG_HOST as string | undefined;
-if (envHost && !backlog.host) backlog.host = envHost;
 
-const envApiKey = import.meta.env.VITE_BACKLOG_API_KEY as string | undefined;
-if (envApiKey && !backlog.apiKey) backlog.apiKey = envApiKey;
 
-const envClientId = import.meta.env.VITE_BACKLOG_CLIENT_ID as string | undefined;
-const envRedirectUri = import.meta.env.VITE_BACKLOG_REDIRECT_URI as string | undefined;
-
-const oauthToken = reactive({
-  accessToken: "",
-  refreshToken: "",
-  expiresAt: 0,
-});
+// env variables for Backlog removed (moved to backend)
 
 // Update state
 const updateVersion = ref<string | null>(null);
@@ -264,6 +272,11 @@ function saveUIState() {
     selectedOwner: selectedOwner.value,
     profileScope: profileScope.value,
     workspaceRoot: runner.workspaceRoot,
+    backlog: {
+      host: backlog.host,
+      token: backlog.token,
+      profile: backlog.profile,
+    }
   };
   window.localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
 }
@@ -284,6 +297,25 @@ function loadUIState() {
     if (state.selectedOwner) selectedOwner.value = state.selectedOwner;
     if (state.profileScope) profileScope.value = state.profileScope;
     if (state.workspaceRoot) runner.workspaceRoot = state.workspaceRoot;
+    if (state.backlog) {
+      if (state.backlog.host) backlog.host = state.backlog.host;
+      if (state.backlog.token) {
+        backlog.token = state.backlog.token;
+        // Legacy support: calculate expires_at if missing (assume just received if we don't know)
+        if (backlog.token.access_token && !backlog.token.expires_at && backlog.token.expires_in) {
+          backlog.token.expires_at = Date.now() + (backlog.token.expires_in * 1000);
+        }
+      }
+      if (state.backlog.profile) {
+        backlog.profile = state.backlog.profile;
+        backlog.status = "success";
+        // If selectedOwner was not loaded or was a legacy default, sync it with current user
+        if (!selectedOwner.value || selectedOwner.value === "Guest") {
+           selectedOwner.value = currentUser.value;
+        }
+        loadBacklogIssues();
+      }
+    }
   } catch (e) {
     console.error("Failed to load UI state", e);
   }
@@ -400,41 +432,17 @@ async function startBacklogOAuthLogin() {
   backlog.error = "";
   backlog.status = "loading";
 
-  if (!backlog.host.trim()) {
-    backlog.status = "error";
-    backlog.error = "Vui lòng nhập Backlog host";
-    return;
-  }
-
-  const clientId = (envClientId ?? "").trim();
-  const defaultRedirectUri = "bsn-isync://oauth/callback";
-  const redirectUri = (envRedirectUri ?? defaultRedirectUri).trim();
-
-  if (!clientId) {
-    backlog.status = "error";
-    backlog.error = "Thiếu client_id";
-    return;
-  }
-
-  if (!redirectUri) {
-    backlog.status = "error";
-    backlog.error = "Thiếu redirect_uri";
-    return;
-  }
-
   const state = buildOAuthState();
   saveOAuthState(state);
 
-  const authUrl = buildBacklogOAuthAuthorizeUrl({
-    host: backlog.host,
-    clientId,
-    redirectUri,
-    state,
-  });
-
-  if (!authUrl) {
+  let authUrl: string;
+  try {
+    authUrl = await invoke("get_backlog_auth_url", { state });
+  } catch (e: any) {
     backlog.status = "error";
-    backlog.error = "Không tạo được URL OAuth2";
+    const msg = String(e);
+    backlog.error = msg;
+    toast.error("Lỗi đăng nhập Backlog", { description: msg });
     return;
   }
 
@@ -469,26 +477,41 @@ async function handleBacklogOAuthUrl(urlString: string) {
   const errorDescription = url.searchParams.get("error_description");
   if (error) {
     backlog.status = "error";
-    backlog.error = `OAuth2 error: ${errorDescription || error}`;
+    const msg = `OAuth2 error: ${errorDescription || error}`;
+    backlog.error = msg;
+    toast.error("Lỗi OAuth2 Backlog", { description: msg });
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
 
   const code = url.searchParams.get("code");
+  if (code) {
+    const key = `bsn_isync_code_${code}`;
+    if (window.sessionStorage.getItem(key)) {
+      console.log("[backlog-oauth] Code already processed in this session, skipping.");
+      return;
+    }
+    window.sessionStorage.setItem(key, "1");
+  }
+  
   const state = url.searchParams.get("state");
   const expectedState = readOAuthState();
   console.log("[backlog-oauth] state compare:", { received: state, expected: expectedState });
 
   if (!code) {
     backlog.status = "error";
-    backlog.error = "Thiếu authorization code";
+    const msg = "Thiếu authorization code";
+    backlog.error = msg;
+    toast.error(msg);
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
 
   if (!state || !expectedState || state !== expectedState) {
     backlog.status = "error";
-    backlog.error = "State không hợp lệ";
+    const msg = "State không hợp lệ (mismatch)";
+    backlog.error = msg;
+    toast.error(msg);
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
@@ -496,18 +519,26 @@ async function handleBacklogOAuthUrl(urlString: string) {
   clearOAuthState();
   backlog.status = "loading";
 
-  let token: { access_token: string; token_type: string; expires_in: number; refresh_token: string };
+  let token: BacklogOAuthToken;
   try {
-    token = await invoke("backlog_oauth_exchange", { code });
+    token = await invoke("backlog_oauth_exchange", { code }) as any;
+    if (token) {
+      token.expires_at = Date.now() + (token.expires_in * 1000);
+      if (token.host) {
+        backlog.host = token.host;
+      }
+    }
   } catch (e: any) {
     backlog.status = "error";
-    backlog.error = `Không lấy được token: ${String(e)}`;
+    const msg = `Không lấy được token: ${String(e)}`;
+    backlog.error = msg;
+    toast.error("Lỗi trao đổi Token", { description: String(e) });
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
-  oauthToken.accessToken = token.access_token;
-  oauthToken.refreshToken = token.refresh_token;
-  oauthToken.expiresAt = Date.now() + token.expires_in * 1000;
+  
+  backlog.token = token;
+  saveUIState();
 
   const profileResult = await fetchBacklogProfileWithToken({
     host: backlog.host,
@@ -517,16 +548,156 @@ async function handleBacklogOAuthUrl(urlString: string) {
   if (profileResult.status === "error") {
     backlog.status = "error";
     backlog.error = profileResult.error;
+    toast.error("Lỗi lấy Profile Backlog", { description: profileResult.error });
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
 
   backlog.profile = profileResult.profile;
   backlog.status = "success";
-  currentUser.value = profileResult.profile.name || profileResult.profile.userId || "Bạn";
   selectedOwner.value = currentUser.value;
+  saveUIState(); // update with profile
   if (shouldResetHistory) window.history.replaceState({}, "", "/");
+  
+  // Auto load projects after login
+  await loadBacklogProjects();
+  loadBacklogIssues();
+  toast.success(`Chào mừng trở lại, ${profileResult.profile.name}!`, { 
+    description: "Bạn đã đăng nhập Backlog thành công." 
+  });
 }
+
+function handleBacklogLogout() {
+  backlog.profile = null;
+  backlog.token = null;
+  backlog.status = "idle";
+  backlog.error = "";
+  backlog.projects = [];
+  backlog.issueTypes = [];
+  selectedOwner.value = currentUser.value; // Reset to Guest/Me
+  saveUIState();
+  toast.success("Đã đăng xuất Backlog");
+}
+
+// background refresh timer
+let backlogRefreshInterval: number | undefined;
+
+async function ensureValidBacklogToken() {
+  if (!backlog.token || !backlog.token.refresh_token) return true;
+
+  const now = Date.now();
+  // If token expires in less than 5 minutes, refresh it
+  if (backlog.token.expires_at && (backlog.token.expires_at - now < 5 * 60 * 1000)) {
+    console.log("[backlog-auth] Token expiring soon, refreshing...");
+    try {
+      const newToken = await invoke("backlog_oauth_refresh", { refreshToken: backlog.token.refresh_token }) as any;
+      if (newToken) {
+         newToken.expires_at = Date.now() + (newToken.expires_in * 1000);
+         backlog.token = newToken;
+         saveUIState();
+         console.log("[backlog-auth] Token refreshed successfully.");
+         return true;
+      }
+    } catch (e) {
+      console.error("[backlog-auth] Failed to refresh token:", e);
+      toast.error("Lỗi tự động refresh token Backlog", { description: String(e) });
+      return false;
+    }
+  }
+  return true;
+}
+
+async function loadBacklogProjects() {
+  if (!backlog.token?.access_token || !backlog.host) return;
+  
+  const ok = await ensureValidBacklogToken();
+  if (!ok) return;
+
+  const res = await fetchBacklogProjects({
+    host: backlog.host,
+    accessToken: backlog.token.access_token,
+  });
+  if (res.status === "success") {
+    backlog.projects = res.projects;
+    return res.projects;
+  }
+  return [];
+}
+
+async function loadBacklogIssueTypes(projectKey: string) {
+  if (!backlog.token?.access_token || !backlog.host || !projectKey) return;
+
+  const ok = await ensureValidBacklogToken();
+  if (!ok) return;
+
+  const res = await fetchBacklogIssueTypes({
+    host: backlog.host,
+    accessToken: backlog.token.access_token,
+    projectIdOrKey: projectKey,
+  });
+  if (res.status === "success") {
+    backlog.issueTypes = res.issueTypes;
+  }
+}
+
+async function loadBacklogIssues() {
+  const projectKey = runner.backlogProjectKey;
+  if (!backlog.token?.access_token || !backlog.host || !projectKey || !backlog.profile?.id) return;
+  
+  const ok = await ensureValidBacklogToken();
+  if (!ok) return;
+
+  const project = backlog.projects.find(p => p.projectKey === projectKey);
+  if (!project) return;
+
+  const res = await fetchBacklogIssues({
+    host: backlog.host,
+    accessToken: backlog.token.access_token,
+    projectId: project.id,
+    assigneeId: backlog.profile.id,
+  });
+  if (res.status === "success") {
+    backlog.issues = res.issues;
+  }
+}
+
+const issueSearchQuery = ref("");
+const showIssueSearch = ref(false);
+const filteredBacklogIssues = computed(() => {
+  const q = issueSearchQuery.value.trim().toLowerCase();
+  if (!q) return backlog.issues;
+  return backlog.issues.filter(i => 
+    i.issueKey.toLowerCase().includes(q) || 
+    i.summary.toLowerCase().includes(q)
+  );
+});
+
+function selectBacklogIssue(issue: BacklogIssue) {
+  runner.backlogIssueKey = issue.issueKey;
+  runner.backlogIssueSummary = issue.summary;
+  runner.runArgs = issue.issueKey;
+  
+  // Example: tính năng 1 - BSN_IMPRROT
+  // When selecting an issue, we update the custom part to either be the summary (if default) 
+  // or keep current custom part.
+  let currentName = editableProfileName.value.trim();
+  // Strip existing key if any from the display name to get clean custom part
+  currentName = currentName.replace(/\s*-\s*[A-Z0-9_]+-[0-9]+$/i, "");
+
+  if (currentName.startsWith("Setup ") || !currentName) {
+    editableProfileName.value = issue.summary;
+  } else {
+    editableProfileName.value = currentName;
+  }
+}
+
+function unlinkBacklogIssue() {
+  runner.backlogIssueKey = "";
+  runner.backlogIssueSummary = "";
+  runner.runArgs = "";
+}
+
+
 
 const ownerSearch = ref("");
 const filteredOwnerOptions = computed(() => {
@@ -551,8 +722,15 @@ async function handleBacklogOAuthCallback() {
 // handleBacklogLogin removed (redundant)
 
 const ownerOptions = computed(() => {
-  const owners = new Set<string>([currentUser.value]);
-  setupProfiles.value.forEach((p) => owners.add(p.owner));
+  const owners = new Set<string>();
+  if (currentUser.value) {
+    owners.add(currentUser.value);
+  }
+  setupProfiles.value.forEach((p) => {
+    if (p.owner && p.owner !== "Guest") {
+      owners.add(p.owner);
+    }
+  });
   return Array.from(owners);
 });
 
@@ -630,6 +808,10 @@ const runner = reactive({
   loadingTarget: null as "exe" | "build" | "restore" | "rebuild" | "bat" | null,
   logs: [] as string[],
   childPid: 0 as number | 0,
+  backlogProjectKey: "",
+  backlogIssueTypeId: undefined as number | undefined,
+  backlogIssueKey: "",
+  backlogIssueSummary: "",
 });
 
 // --- Autosave logic ---
@@ -644,6 +826,14 @@ watch(() => {
     }
   }
 }, { deep: true });
+
+watch(() => runner.backlogProjectKey, (newKey) => {
+  if (newKey) {
+    window.localStorage.setItem("backlog_last_project", newKey);
+    // When project changes in header, also fetch new issues
+    void loadBacklogIssues();
+  }
+});
 
 
 function resolveArgs(args: string) {
@@ -679,6 +869,13 @@ function insertTimePlaceholder() {
     input.setSelectionRange(newPos, newPos);
   });
 }
+
+watch(() => runner.backlogProjectKey, (newKey) => {
+  if (newKey) {
+    loadBacklogIssueTypes(newKey);
+    loadBacklogIssues();
+  }
+});
 
 // Auto-sync configTemplate with UI inputs
 watch(() => [runner.aliasExeName, runner.batFilePath], () => {
@@ -730,6 +927,10 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     sqlPassword: runner.sqlPassword,
     useWindowsAuth: runner.useWindowsAuth,
     configTemplate: runner.configTemplate,
+    backlogProjectKey: runner.backlogProjectKey,
+    backlogIssueTypeId: runner.backlogIssueTypeId,
+    backlogIssueKey: runner.backlogIssueKey,
+    backlogIssueSummary: runner.backlogIssueSummary,
     sync: (() => {
       const { logs, ...syncData } = sync;
       return JSON.parse(JSON.stringify(syncData));
@@ -758,8 +959,17 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.sqlPassword = setup.sqlPassword || "";
   runner.useWindowsAuth = !!setup.useWindowsAuth;
   runner.configTemplate = setup.configTemplate || "";
+  runner.backlogProjectKey = setup.backlogProjectKey || "";
+  runner.backlogIssueTypeId = setup.backlogIssueTypeId;
+  runner.backlogIssueKey = setup.backlogIssueKey || "";
+  runner.backlogIssueSummary = setup.backlogIssueSummary || "";
   if (setup.sync) {
     Object.assign(sync, setup.sync);
+  }
+  
+  // Backlog linkage
+  if (setup.backlogProjectKey) {
+    void loadBacklogIssueTypes(setup.backlogProjectKey);
   }
 }
 
@@ -818,9 +1028,40 @@ watch([selectedOwner, profileSearch, profileScope, setupProfiles], () => {
   ensureVisibleSelection();
 }, { deep: true });
 
-watch([activeTab, dark, selectedSetupId, selectedOwner, profileScope, () => runner.workspaceRoot], () => {
+watch([activeTab, dark, selectedSetupId, selectedOwner, profileScope, () => runner.workspaceRoot, () => backlog.host, () => backlog.token, () => backlog.profile], () => {
   saveUIState();
 }, { deep: true });
+
+watch(currentUser, (newVal) => {
+  if (newVal && newVal !== "Guest") {
+    // Dynamically migrate in-memory profiles that don't have a valid owner
+    const migrated = setupProfiles.value.map(p => {
+      if (!p.owner || p.owner === "Guest" || p.owner === "ngtuonghy") {
+        return { ...p, owner: newVal };
+      }
+      return p;
+    });
+    
+    // Only update if something actually changed to avoid infinite watch loops
+    if (JSON.stringify(migrated) !== JSON.stringify(setupProfiles.value)) {
+      setupProfiles.value = migrated;
+      saveSetupsForCurrentRoot();
+    }
+    
+    // Force selectedOwner to current if it's lagging Behind
+    if (!selectedOwner.value || selectedOwner.value === "Guest" || selectedOwner.value === "ngtuonghy") {
+      selectedOwner.value = newVal;
+    }
+  }
+}, { immediate: true });
+
+watch(() => runner.backlogProjectKey, (newVal) => {
+  if (newVal) {
+    void loadBacklogIssueTypes(newVal);
+  } else {
+    backlog.issueTypes = [];
+  }
+});
 
 watch(selectedSetupId, (next, prev) => {
   if (next && next !== prev) {
@@ -866,16 +1107,28 @@ function saveCurrentToSelectedSetupProfile() {
     return JSON.parse(JSON.stringify(syncData));
   })();
   
+  setup.backlogProjectKey = runner.backlogProjectKey;
+  setup.backlogIssueTypeId = runner.backlogIssueTypeId;
+  setup.backlogIssueKey = runner.backlogIssueKey;
+  setup.backlogIssueSummary = runner.backlogIssueSummary;
+  
   setupProfiles.value[idx] = setup;
   saveSetupsForCurrentRoot();
 }
 
 function startEditingProfileName() {
   if (!selectedProfile.value || !canEditSelected.value) return;
-  editableProfileName.value = selectedProfile.value.name;
+  // Extract custom part from full name (strip " - KEY")
+  let name = selectedProfile.value.name;
+  if (selectedProfile.value.backlogIssueKey) {
+    const keyMatch = new RegExp(`\\s*-\\s*${selectedProfile.value.backlogIssueKey}$`, "i");
+    name = name.replace(keyMatch, "");
+  }
+  editableProfileName.value = name;
   isEditingProfileName.value = true;
   nextTick(() => profileNameInput.value?.focus());
 }
+
 
 function cancelEditingProfileName() {
   isEditingProfileName.value = false;
@@ -888,8 +1141,8 @@ function commitProfileName() {
     cancelEditingProfileName();
     return;
   }
-  const name = editableProfileName.value.trim();
-  if (!name) {
+  const namePart = editableProfileName.value.trim();
+  if (!namePart) {
     cancelEditingProfileName();
     return;
   }
@@ -899,7 +1152,14 @@ function commitProfileName() {
     return;
   }
   const setup = { ...setupProfiles.value[idx] };
-  setup.name = name;
+  
+  // Reconstruct full name: [Custom Part] - [Issue Key]
+  if (runner.backlogIssueKey) {
+    setup.name = `${namePart} - ${runner.backlogIssueKey}`;
+  } else {
+    setup.name = namePart;
+  }
+  
   setupProfiles.value[idx] = setup;
   saveSetupsForCurrentRoot();
   cancelEditingProfileName();
@@ -1282,6 +1542,13 @@ async function initPty(id: 'main' | 'run', container: HTMLElement) {
 }
 
 onMounted(async () => {
+  // Sync Backlog config from backend
+  try {
+    const config = await invoke("get_backlog_config") as { host: string };
+    if (config.host) backlog.host = config.host;
+  } catch (e) {
+    console.error("Failed to load Backlog config:", e);
+  }
   loadUIState();
   loadSetupsForCurrentRoot();
   await handleBacklogOAuthCallback();
@@ -1303,9 +1570,22 @@ onMounted(async () => {
 
   try {
     await discoverProjects(false);
-  } catch (e: any) {
-    // Silent error
+  } catch (e: any) {}
+
+  await loadBacklogProjects();
+
+  // Load last selected project from global storage if not set by profile
+  const lastProject = window.localStorage.getItem("backlog_last_project");
+  if (lastProject && !runner.backlogProjectKey) {
+    runner.backlogProjectKey = lastProject;
   }
+
+  // If a project is already selected (from storage or profile), fetch issues
+  if (runner.backlogProjectKey) {
+    void loadBacklogIssues();
+  }
+
+
 
   unlistenRunnerLog = await listen<string>("runner-log", (event) => {
     const t = termState.active === 'main' ? termState.main.term : termState.run.term;
@@ -1358,9 +1638,16 @@ onMounted(async () => {
   });
   if (mainTermRef.value) ro.observe(mainTermRef.value);
   if (runTermRef.value) ro.observe(runTermRef.value);
+
+  backlogRefreshInterval = window.setInterval(() => {
+    if (backlog.token) {
+      ensureValidBacklogToken();
+    }
+  }, 2 * 60 * 1000); // Check every 2 minutes
 });
 
 onUnmounted(() => {
+  if (backlogRefreshInterval) window.clearInterval(backlogRefreshInterval);
   if (unlistenRunnerLog) unlistenRunnerLog();
   if (unlistenBuildStatus) unlistenBuildStatus();
   if (runnerPollTimer) window.clearInterval(runnerPollTimer);
@@ -1382,14 +1669,17 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <BacklogAuthPanel
+          <BacklogAuthPanel 
             class="mr-2"
-            :host="backlog.host"
+            v-model:host="backlog.host"
             :apiKey="backlog.apiKey"
             :status="backlog.status"
             :profile="backlog.profile"
+            :projects="backlog.projects"
+            v-model:selectedProjectKey="runner.backlogProjectKey"
             :error="backlog.error"
             @login-oauth="startBacklogOAuthLogin"
+            @logout="handleBacklogLogout"
           />
           <div class="h-4 w-px bg-border mx-1"></div>
           
@@ -1450,79 +1740,110 @@ onUnmounted(() => {
             <div ref="mainScrollRef" class="w-[55%] min-h-0 flex flex-col gap-6 pt-4 pl-6 pr-4 pb-8 overflow-y-auto overflow-x-hidden custom-scrollbar">
               <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 ring-1 ring-black/5 dark:ring-white/10 overflow-hidden backdrop-blur-2xl">
                 <div class="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-                  <div class="text-[13px] font-bold tracking-tight">Project Profile</div>
-                  <div class="flex items-center gap-2" v-if="selectedProfile">
-                    <span class="text-[9px] px-2 py-0.5 rounded-full bg-muted font-medium uppercase tracking-tighter">{{ selectedProfile.owner }}</span>
+                  <div class="flex items-center gap-3">
+                    <div class="text-[13px] font-bold tracking-tight">Project Profile</div>
+                    <div v-if="selectedProfile && selectedProfile.owner" class="text-[9px] px-2 py-0.5 rounded-full bg-muted font-medium uppercase tracking-tighter">{{ selectedProfile.owner }}</div>
                   </div>
+                  <Button 
+                    variant="secondary" 
+                    size="sm" 
+                    class="h-8 px-3 font-bold relative group/create shrink-0" 
+                    :disabled="runner.running || backlog.status !== 'success'" 
+                    @click="createNewSetupProfile"
+                  >
+                    <Plus class="size-3.5 mr-1" /> Create
+                    <span v-if="backlog.status !== 'success'" class="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-black/95 text-[9px] text-white rounded-md shadow-xl opacity-0 group-hover/create:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Đăng nhập để tạo</span>
+                  </Button>
                 </div>
                 
                 <div class="p-4 flex-1 overflow-hidden">
                   <div class="grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] gap-4 h-full">
                     <!-- Left Column: Search & List -->
                     <div class="flex flex-col gap-3 h-full min-h-0">
-                      <div class="space-y-2 pb-2 border-b border-white/5 shrink-0">
-                        <div class="flex items-center justify-between gap-2">
-                          <Select v-model="selectedOwner" :disabled="runner.running">
-                            <SelectTrigger class="h-10 text-[10.5px] bg-muted/20 border-input pl-1.5">
-                              <div class="flex items-center gap-2 overflow-hidden">
-                                <Avatar size="sm" shape="square" class="rounded-md">
-                                  <AvatarFallback>{{ initials(selectedOwner || "") }}</AvatarFallback>
-                                </Avatar>
-                                <div class="truncate">
-                                  <SelectValue placeholder="Owner" />
+                        <div class="space-y-2.5 pb-2 border-b border-white/5 shrink-0">
+                          <!-- Row 1: Owner Selection & Home -->
+                          <div class="flex items-center gap-1.5">
+                            <Select v-model="selectedOwner" :disabled="runner.running">
+                              <SelectTrigger class="h-9 text-[10.5px] bg-muted/20 border-input pl-1.5 flex-1 overflow-hidden">
+                                <div class="flex items-center gap-2 overflow-hidden text-left">
+                                  <Avatar size="sm" class="h-5 w-5 ring-1 ring-primary/20">
+                                    <AvatarFallback class="bg-linear-to-br from-primary/80 to-primary text-primary-foreground text-[8px] font-bold">{{ initials(selectedOwner || "") }}</AvatarFallback>
+                                  </Avatar>
+                                  <div class="truncate flex-1">
+                                    <SelectValue placeholder="Owner" />
+                                  </div>
                                 </div>
-                              </div>
-                            </SelectTrigger>
-                            <SelectContent class="p-1">
-                              <div class="py-2">
-                                <div class="relative">
-                                  <Search class="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground opacity-40" />
-                                  <input v-model="ownerSearch" 
-                                         class="w-full bg-background border border-input h-9 text-[11px] pl-9 pr-2 rounded-md focus:outline-none focus:ring-1 focus:ring-primary/20 placeholder:text-muted-foreground/50 transition-all font-medium" 
-                                         placeholder="Filter owners..."
-                                         @mousedown.stop
-                                         @keydown.stop />
+                              </SelectTrigger>
+                              <SelectContent class="p-1">
+                                <div class="py-2 px-1">
+                                  <div class="relative">
+                                    <Search class="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground opacity-40" />
+                                    <input v-model="ownerSearch" 
+                                           class="w-full bg-background border border-input h-9 text-[11px] pl-9 pr-2 rounded-md focus:outline-none focus:ring-1 focus:ring-primary/20 placeholder:text-muted-foreground/50 transition-all font-medium" 
+                                           placeholder="Filter owners..."
+                                           @mousedown.stop
+                                           @keydown.stop />
+                                  </div>
                                 </div>
-                              </div>
-                              <div class="max-h-[200px] overflow-y-auto custom-scrollbar">
-                                <SelectItem v-for="owner in filteredOwnerOptions" :key="owner" :value="owner" :text-value="owner">
-                                  <template #leading>
-                                    <Avatar size="sm" shape="square" class="rounded-sm h-5 w-5" aria-hidden="true">
-                                      <AvatarFallback class="text-[8px]">{{ initials(owner) }}</AvatarFallback>
-                                    </Avatar>
-                                  </template>
-                                  <span class="text-[10.5px] font-medium">{{ owner }}</span>
-                                </SelectItem>
-                                <div v-if="filteredOwnerOptions.length === 0" class="px-2 py-4 text-center text-[10px] text-muted-foreground italic opacity-50">
-                                  No owners found
+                                <div class="max-h-[200px] overflow-y-auto custom-scrollbar">
+                                  <SelectItem v-for="owner in filteredOwnerOptions" :key="owner" :value="owner" :text-value="owner">
+                                    <template #leading>
+                                      <Avatar size="sm" class="h-5 w-5 ring-1 ring-primary/20" aria-hidden="true">
+                                        <AvatarFallback class="bg-linear-to-br from-primary/80 to-primary text-primary-foreground text-[8px] font-bold">{{ initials(owner) }}</AvatarFallback>
+                                      </Avatar>
+                                    </template>
+                                    <span class="text-[10.5px] font-medium">{{ owner }}</span>
+                                  </SelectItem>
+                                  <div v-if="filteredOwnerOptions.length === 0" class="px-2 py-4 text-center text-[10px] text-muted-foreground italic opacity-50">
+                                    No owners found
+                                  </div>
                                 </div>
-                              </div>
-                            </SelectContent>
-                          </Select>
-                          <Button variant="secondary" size="sm" class="font-bold" :disabled="runner.running" @click="createNewSetupProfile">
-                            <Plus class="size-3 mr-1" /> Create
-                          </Button>
-                        </div>
-                        <div class="relative">
-                          <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground opacity-50" />
-                          <Input v-model="profileSearch" placeholder="Search profiles..." :disabled="runner.running" class="pl-9 h-9" />
-                        </div>
-                      </div>
+                              </SelectContent>
+                            </Select>
 
-                      <div class="flex-1 overflow-y-auto px-1 pb-2 space-y-1 custom-scrollbar">
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              class="h-9 w-9 shrink-0 rounded-xl hover:bg-primary/10 transition-all duration-300"
+                              :class="selectedOwner === currentUser && profileScope === 'personal' ? 'text-primary bg-primary/5 shadow-inner' : 'text-muted-foreground/60'"
+                              @click="() => { selectedOwner = currentUser; profileScope = 'personal'; }"
+                              title="My Profiles"
+                            >
+                              <Home class="size-4" :class="selectedOwner === currentUser && profileScope === 'personal' ? 'scale-110' : ''" />
+                            </Button>
+                          </div>
+
+                          <!-- Row 3: Target Project (Scanned) -->
+                    
+
+                          <!-- Row 4: Search -->
+                          <div class="relative w-full">
+                            <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground opacity-50" />
+                            <Input v-model="profileSearch" placeholder="Search profiles..." :disabled="runner.running" class="pl-9 h-9 text-[11px]" />
+                          </div>
+                        </div>
+
+                      <div class="flex-1 overflow-y-auto px-1 pb-2 space-y-1.5 custom-scrollbar">
                         <button v-for="setup in scopedProfiles" :key="setup.id"
                                 :disabled="runner.running"
-                                class="w-full flex text-left rounded-lg p-2.5 transition-all group/item relative border"
+                                class="w-full flex flex-col text-left rounded-xl p-3 transition-all duration-300 group/item relative border bg-linear-to-br"
                                 :class="[
-                                  setup.id === selectedSetupId ? 'bg-primary/10 border-primary/20 shadow-sm' : 'border-transparent hover:bg-muted/20',
+                                  setup.id === selectedSetupId 
+                                    ? 'from-primary/10 to-primary/5 border-primary/20 shadow-sm ring-1 ring-primary/10' 
+                                    : 'border-transparent hover:bg-muted/30 from-transparent to-transparent',
                                   runner.running ? 'opacity-50 cursor-not-allowed' : ''
                                 ]"
                                 @click="selectedSetupId = setup.id">
-                            <div class="min-w-0 flex-1">
-                              <div class="text-sm font-bold truncate leading-none mb-1.5">{{ setup.name }}</div>
-                               <div class="text-xs text-muted-foreground truncate opacity-70">{{ discoveredProjects.find(p => p.root === setup.projectRoot)?.name || setup.projectRoot?.split('\\').pop() || "Chưa chọn dự án" }}</div>
+                            <div class="flex items-center justify-between w-full mb-1">
+                              <div class="text-[13px] font-bold leading-tight text-foreground/90 group-hover/item:text-primary transition-colors break-words">{{ setup.name }}</div>
+                              <component :is="setup.owner === currentUser ? Pencil : Save" class="size-3 opacity-0 group-hover/item:opacity-40 transition-opacity" />
                             </div>
-                            <component :is="setup.owner === currentUser ? Pencil : Save" class="size-3 opacity-0 group-hover/item:opacity-40 transition-opacity" />
+                            <div class="flex items-center gap-1.5 overflow-hidden">
+                              <div class="h-1.5 w-1.5 rounded-full bg-primary/40 group-hover/item:bg-primary transition-colors shrink-0"></div>
+                              <div class="text-[10px] text-muted-foreground truncate font-medium tracking-tight opacity-70 group-hover/item:opacity-100 transition-opacity">
+                                {{ discoveredProjects.find(p => p.root === setup.projectRoot)?.name || setup.projectRoot?.split('\\').pop() || "Chưa chọn dự án" }}
+                              </div>
+                            </div>
                         </button>
                       </div>
                     </div>
@@ -1530,55 +1851,127 @@ onUnmounted(() => {
                     <!-- Right Column: Detail Form -->
                     <div class="flex flex-col gap-4 border-l border-white/5 pl-4 overflow-y-auto custom-scrollbar">
                       <div class="flex items-center justify-between pb-2 border-b border-white/5">
-                        <div class="min-w-0 flex-1">
-                          <Input v-if="isEditingProfileName" v-model="editableProfileName" class="font-bold" @keydown.enter="commitProfileName" @blur="commitProfileName" />
-                          <button v-else class="w-full text-left text-[13px] font-bold hover:text-primary transition-colors flex items-center gap-1.5 min-w-0" @click="startEditingProfileName">
-                            <span class="truncate">{{ selectedProfile?.name || "No Profile Selected" }}</span>
-                            <Pencil v-if="canEditSelected" class="size-3 opacity-30 shrink-0" />
-                          </button>
+                        <div class="min-w-0 flex-1 relative">
+                          <template v-if="isEditingProfileName">
+                            <div class="relative group/identity flex flex-col gap-1.5 animate-in fade-in slide-in-from-top-2 duration-300">
+                              <div class="flex items-center gap-2">
+                                <div class="relative flex-1 flex items-center bg-card border border-primary/20 rounded-2xl px-1.5 focus-within:ring-2 focus-within:ring-primary/20 shadow-sm transition-all group-focus-within/identity:border-primary/40">
+                                  <Input 
+                                    ref="profileNameInput" 
+                                    v-model="editableProfileName" 
+                                    class="font-black h-10 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-[15px] px-2.5 flex-1 min-w-0" 
+                                    placeholder="Tên profile hoặc tìm issue..."
+                                    @focus="showIssueSearch = true"
+                                    @keydown.enter="commitProfileName" 
+                                  />
+                                  <div v-if="runner.backlogIssueKey" class="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-primary text-primary-foreground text-[9px] font-black shrink-0 mr-1 shadow-sm group/badge">
+                                    {{ runner.backlogIssueKey }}
+                                    <button @click.stop="unlinkBacklogIssue" class="hover:bg-white/20 rounded-full p-0.5 transition-colors opacity-60 group-hover/badge:opacity-100" title="Unlink issue">
+                                      <X class="size-2.5" />
+                                    </button>
+                                  </div>
+                                  <div class="flex items-center gap-1 shrink-0 p-1">
+                                    <a v-if="backlogIssueUrl" 
+                                       :href="backlogIssueUrl" 
+                                       target="_blank" 
+                                       class="p-1.5 rounded-lg hover:bg-primary/10 text-primary opacity-40 hover:opacity-100 transition-all"
+                                       title="Xem trên Backlog"
+                                       @click.stop>
+                                      <ExternalLink class="size-3.5" />
+                                    </a>
+                                  </div>
+                                </div>
+                                <Button variant="ghost" size="icon" class="h-10 w-10 rounded-2xl hover:bg-primary/5 border border-transparent hover:border-primary/10" @click="commitProfileName">
+                                  <Save class="size-5 text-primary opacity-60" />
+                                </Button>
+                              </div>
+
+                              <!-- Unified Search Dropdown -->
+                              <div v-if="showIssueSearch && backlog.profile" 
+                                   class="absolute top-12 left-0 w-full z-50 bg-card/95 backdrop-blur-xl border border-primary/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 origin-top">
+                                <div class="p-2 border-b border-white/5 bg-primary/5 flex items-center justify-between">
+                                  <span class="text-[9px] font-bold text-muted-foreground uppercase tracking-widest pl-2">Gợi ý từ Backlog</span>
+                                  <Button variant="ghost" size="icon" class="h-5 w-5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive" @click="showIssueSearch = false">
+                                    <Plus class="size-3 rotate-45" />
+                                  </Button> 
+                                </div>
+                                <div class="max-h-[300px] overflow-y-auto custom-scrollbar p-1">
+                                  <div v-if="filteredBacklogIssues.length === 0" class="py-12 text-center">
+                                    <Search class="size-8 mx-auto opacity-10 mb-2" />
+                                    <p class="text-[10px] uppercase font-bold text-muted-foreground opacity-40">Không tìm thấy issue</p>
+                                  </div>
+                                  <button v-for="issue in filteredBacklogIssues.slice(0, 15)" :key="issue.id"
+                                          class="w-full flex flex-col items-start p-2.5 rounded-xl transition-all hover:bg-primary/10 group/item text-left"
+                                          @click="selectBacklogIssue(issue); showIssueSearch = false">
+                                    <div class="flex items-center gap-2 mb-0.5">
+                                      <div class="px-1.5 py-0.5 rounded bg-primary text-primary-foreground text-[8px] font-black shrink-0 shadow-sm">{{ issue.issueKey }}</div>
+                                      <span class="text-[11px] font-bold text-foreground group-hover/item:text-primary truncate">{{ issue.summary }}</span>
+                                    </div>
+                                    <span class="text-[9px] text-muted-foreground opacity-60 pl-0.5">{{ issue.summary }}</span>
+                                  </button>
+                                </div>
+                                <div class="p-2 bg-muted/30 border-t border-white/5 flex items-center justify-center">
+                                  <span class="text-[8px] text-muted-foreground opacity-40 italic">Kết quả từ dự án: {{ runner.backlogProjectKey }}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </template>
+                          <div v-else class="flex-1 flex flex-col gap-1 min-w-0">
+                            <button class="w-full text-left group/header flex flex-col gap-0.5" @click="startEditingProfileName">
+                              <div class="flex items-center gap-2.5">
+                                <div class="h-2 w-2 rounded-full bg-primary/20 group-hover/header:bg-primary transition-all duration-500 shadow-[0_0_8px_rgba(var(--primary),0.2)]"></div>
+                                <span class="text-[16px] font-black tracking-tight leading-tight group-hover/header:text-primary transition-colors break-words">{{ selectedProfile?.name || 'No Profile Selected' }}</span>
+                                <Pencil v-if="canEditSelected" class="size-3.5 opacity-0 group-hover/header:opacity-40 transition-opacity shrink-0 translate-y-0.5" />
+                              </div>
+                              <div v-if="runner.backlogIssueKey" class="flex items-center gap-2 pl-4.5 mt-0.5">
+                                <div class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-muted text-muted-foreground/80 tracking-tighter">{{ runner.backlogIssueKey }}</div>
+                                <span class="text-[10px] text-muted-foreground font-medium opacity-60 break-words leading-tight">{{ runner.backlogIssueSummary }}</span>
+                                <a :href="backlogIssueUrl" target="_blank" @click.stop class="ml-auto p-1 rounded-md hover:bg-primary/5 text-primary opacity-0 group-hover/header:opacity-40 hover:opacity-100 transition-all">
+                                  <ExternalLink class="size-3" />
+                                </a>
+                              </div>
+                            </button>
+                          </div>
                         </div>
                         <div class="flex items-center gap-1 ml-2">
-                          <Button variant="ghost" size="icon" class="h-7 w-7" :disabled="!canEditSelected" @click="saveCurrentToSelectedSetupProfile"><Save class="size-3.5" /></Button>
-                          <Button variant="ghost" size="icon" class="h-7 w-7 text-red-500/60 hover:text-red-500 hover:bg-red-500/10" :disabled="!canEditSelected" @click="deleteSelectedSetupProfile"><Trash2 class="size-3.5" /></Button>
+                          <!-- Delete moved to bottom -->
                         </div>
                       </div>
 
-                      <div class="space-y-4">
+                      <div class="space-y-6">
                         <div class="space-y-1.5">
-                          <Label class="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Target Project</Label>
-                          <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject">
-                            <SelectTrigger class="w-full h-9 bg-muted/20 border-input">
-                              <div class="truncate max-w-full">
-                                <SelectValue placeholder="Quét dự án để chọn...">
-                                  {{ discoveredProjects.find(p => p.root === selectedProjectRoot)?.name }}
-                                </SelectValue>
+                        <Label class="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Target Project</Label>
+                        <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject">
+                          <SelectTrigger class="w-full h-9 bg-muted/20 border-input">
+                            <div class="truncate max-w-full font-medium">
+                              <SelectValue placeholder="Quét dự án để chọn...">
+                                {{ discoveredProjects.find(p => p.root === selectedProjectRoot)?.name }}
+                              </SelectValue>
+                            </div>
+                          </SelectTrigger>
+                          <SelectContent class="p-1">
+                            <div class="py-2 px-1">
+                              <div class="relative">
+                                <Search class="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground opacity-40" />
+                                <input v-model="projectSearch" 
+                                       class="w-full bg-background border border-input h-9 text-[11px] pl-9 pr-2 rounded-md focus:outline-none focus:ring-1 focus:ring-primary/20 placeholder:text-muted-foreground/50 transition-all font-medium" 
+                                       placeholder="Filter projects..."
+                                       @mousedown.stop
+                                       @keydown.stop />
                               </div>
-                            </SelectTrigger>
-                            <SelectContent class="p-1">
-                              <div class="py-2">
-                                <div class="relative">
-                                  <Search class="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground opacity-40" />
-                                  <input v-model="projectSearch" 
-                                         class="w-full bg-background border border-input h-9 text-[11px] pl-9 pr-2 rounded-md focus:outline-none focus:ring-1 focus:ring-primary/20 placeholder:text-muted-foreground/50 transition-all font-medium" 
-                                         placeholder="Filter projects..."
-                                         @mousedown.stop
-                                         @keydown.stop />
+                            </div>
+                            <div class="max-h-[250px] overflow-y-auto custom-scrollbar">
+                              <SelectItem v-for="item in filteredDiscoveredProjects" :key="item.root" :value="item.root">
+                                <div class="flex flex-col items-start gap-0.5">
+                                  <span class="text-xs font-bold">{{ item.name }}</span>
+                                  <span class="text-[9px] text-muted-foreground opacity-60 truncate max-w-[300px]">{{ item.root }}</span>
                                 </div>
-                              </div>
-                              <div class="max-h-[250px] overflow-y-auto custom-scrollbar">
-                                <SelectItem v-for="item in filteredDiscoveredProjects" :key="item.root" :value="item.root">
-                                  <div class="flex flex-col items-start gap-0.5">
-                                    <span class="text-xs font-bold">{{ item.name }}</span>
-                                    <span class="text-[9px] text-muted-foreground opacity-60 truncate max-w-[300px]">{{ item.root }}</span>
-                                  </div>
-                                </SelectItem>
-                                <div v-if="filteredDiscoveredProjects.length === 0" class="px-2 py-4 text-center text-[10px] text-muted-foreground italic opacity-50">
-                                  No projects match search
-                                </div>
-                              </div>
-                            </SelectContent>
-                          </Select>
-                        </div>
+                              </SelectItem>
+                            </div>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
 
                         <div class="space-y-1.5">
                           <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">EXE Name</Label>
@@ -1657,10 +2050,29 @@ onUnmounted(() => {
                         <Textarea v-model="runner.sqlSetupPath" class="min-h-[120px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Dán mã SQL tại đây (Hỗ trợ tiếng Nhật/Việt)..." />
                       </div>
                     </TabsContent>
-                    <TabsContent value="config" class="mt-0">
-                      <Textarea v-model="runner.configTemplate" class="min-h-[160px] max-h-[500px] overflow-y-auto font-mono text-[11px] p-2" placeholder="Nội dung XML cấu hình..." />
-                    </TabsContent>
                   </Tabs>
+
+                  <!-- Danger Zone (Production Standard) -->
+                  <div class="mt-8 pt-6 border-t border-destructive/10">
+                    <div class="px-1 py-1 rounded-2xl bg-destructive/5 border border-destructive/10">
+                      <div class="flex items-center justify-between p-3">
+                        <div class="flex flex-col gap-0.5">
+                          <span class="text-[10px] font-bold text-destructive uppercase tracking-widest">Danger Zone</span>
+                          <span class="text-[10px] text-muted-foreground font-medium opacity-70">Xóa vĩnh viễn profile này cùng tất cả cài đặt liên quan.</span>
+                        </div>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          class="h-8 px-3 text-[10px] font-bold text-destructive hover:bg-destructive hover:text-destructive-foreground rounded-lg transition-all group/del" 
+                          :disabled="runner.running || !canEditSelected" 
+                          @click="deleteSelectedSetupProfile"
+                        >
+                          <Trash2 class="size-3.5 mr-2 group-hover:animate-bounce" />
+                          DELETE PROFILE
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </section>
 

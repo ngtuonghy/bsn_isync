@@ -80,6 +80,8 @@ export type BacklogOAuthToken = {
   token_type: "Bearer";
   expires_in: number;
   refresh_token: string;
+  expires_at?: number; // Optional timestamp in milliseconds
+  host?: string; // Optional host for sync
 };
 
 export type BacklogOAuthTokenResult =
@@ -247,6 +249,20 @@ export async function refreshBacklogOAuthToken(
   }
 }
 
+export type BacklogProject = {
+  id: number;
+  projectKey: string;
+  name: string;
+};
+
+export type BacklogIssueType = {
+  id: number;
+  projectId: number;
+  name: string;
+  color: string;
+  displayOrder: number;
+};
+
 export async function fetchBacklogProfileWithToken(
   params: { host: string; accessToken: string; fetchFn?: typeof fetch }
 ): Promise<BacklogAuthResult> {
@@ -291,5 +307,102 @@ export async function fetchBacklogProfileWithToken(
       error: `Lỗi kết nối: ${String(e)}`,
       baseUrl,
     };
+  }
+}
+
+export async function fetchBacklogProjects(
+  params: { host: string; accessToken: string; fetchFn?: typeof fetch }
+): Promise<{ status: "success"; projects: BacklogProject[] } | { status: "error"; error: string }> {
+  const baseUrl = buildBacklogBaseUrl(params.host);
+  if (!baseUrl) return { status: "error", error: "Backlog host không hợp lệ" };
+  
+  const fetchImpl = params.fetchFn ?? fetch;
+  try {
+    const res = await fetchImpl(`${baseUrl}/api/v2/projects`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+    });
+    if (!res.ok) return { status: "error", error: `Lỗi fetch projects (${res.status})` };
+    const data = await res.json();
+    return { status: "success", projects: data };
+  } catch (e: any) {
+    return { status: "error", error: String(e) };
+  }
+}
+
+export type BacklogIssue = {
+  id: number;
+  issueKey: string;
+  summary: string;
+  issueType: BacklogIssueType;
+};
+
+export async function fetchBacklogIssue(
+  params: { host: string; accessToken: string; issueKeyOrId: string; fetchFn?: typeof fetch }
+): Promise<{ status: "success"; issue: BacklogIssue } | { status: "error"; error: string }> {
+  const baseUrl = buildBacklogBaseUrl(params.host);
+  if (!baseUrl) return { status: "error", error: "Backlog host không hợp lệ" };
+  
+  const fetchImpl = params.fetchFn ?? fetch;
+  try {
+    const res = await fetchImpl(`${baseUrl}/api/v2/issues/${params.issueKeyOrId}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+    });
+    if (!res.ok) return { status: "error", error: `Lỗi fetch issue (${res.status})` };
+    const data = await res.json();
+    console.log(data);
+    return { status: "success", issue: data };
+  } catch (e: any) {
+    return { status: "error", error: String(e) };
+  }
+}
+
+export async function fetchBacklogIssueTypes(
+  params: { host: string; accessToken: string; projectIdOrKey: string; fetchFn?: typeof fetch }
+): Promise<{ status: "success"; issueTypes: BacklogIssueType[] } | { status: "error"; error: string }> {
+  const baseUrl = buildBacklogBaseUrl(params.host);
+  if (!baseUrl) return { status: "error", error: "Backlog host không hợp lệ" };
+  
+  const fetchImpl = params.fetchFn ?? fetch;
+  try {
+    const res = await fetchImpl(`${baseUrl}/api/v2/projects/${params.projectIdOrKey}/issueTypes`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+    });
+    if (!res.ok) return { status: "error", error: `Lỗi fetch issue types (${res.status})` };
+    const data = await res.json();
+    return { status: "success", issueTypes: data };
+  } catch (e: any) {
+    return { status: "error", error: String(e) };
+  }
+}
+
+export async function fetchBacklogIssues(
+  params: { host: string; accessToken: string; projectId?: number; assigneeId?: number; fetchFn?: typeof fetch }
+): Promise<{ status: "success"; issues: BacklogIssue[] } | { status: "error"; error: string }> {
+  const baseUrl = buildBacklogBaseUrl(params.host);
+  if (!baseUrl) return { status: "error", error: "Backlog host không hợp lệ" };
+  
+  const fetchImpl = params.fetchFn ?? fetch;
+  const searchParams = new URLSearchParams();
+  if (params.projectId) {
+    searchParams.append("projectId[]", String(params.projectId));
+  }
+  if (params.assigneeId) {
+    searchParams.append("assigneeId[]", String(params.assigneeId));
+  }
+  searchParams.append("count", "100");
+
+  try {
+    const res = await fetchImpl(`${baseUrl}/api/v2/issues?${searchParams.toString()}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+    });
+    if (!res.ok) return { status: "error", error: `Lỗi fetch issues (${res.status})` };
+    const data = await res.json();
+    return { status: "success", issues: data };
+  } catch (e: any) {
+    return { status: "error", error: String(e) };
   }
 }

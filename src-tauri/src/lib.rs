@@ -140,81 +140,8 @@ struct SyncAssetRequest {
     dry_run: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-struct BacklogOAuthToken {
-    access_token: String,
-    token_type: String,
-    expires_in: u64,
-    refresh_token: String,
-}
-
-fn normalize_base_url(host: &str) -> Result<String, String> {
-    let trimmed = host.trim();
-    if trimmed.is_empty() {
-        return Err("BACKLOG_HOST chưa được cấu hình".to_string());
-    }
-    let mut base = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        trimmed.to_string()
-    } else {
-        format!("https://{}", trimmed)
-    };
-    while base.ends_with('/') {
-        base.pop();
-    }
-    Ok(base)
-}
-
-#[tauri::command]
-fn backlog_oauth_exchange(code: String) -> Result<BacklogOAuthToken, String> {
-    let host = env::var("BACKLOG_HOST").unwrap_or_default();
-    let client_id = env::var("BACKLOG_CLIENT_ID").unwrap_or_default();
-    let client_secret = env::var("BACKLOG_CLIENT_SECRET").unwrap_or_default();
-    let redirect_uri = env::var("BACKLOG_REDIRECT_URI").unwrap_or_default();
-
-    if host.trim().is_empty() {
-        return Err("Thiếu BACKLOG_HOST".to_string());
-    }
-    if client_id.trim().is_empty() {
-        return Err("Thiếu BACKLOG_CLIENT_ID".to_string());
-    }
-    if client_secret.trim().is_empty() {
-        return Err("Thiếu BACKLOG_CLIENT_SECRET".to_string());
-    }
-    if redirect_uri.trim().is_empty() {
-        return Err("Thiếu BACKLOG_REDIRECT_URI".to_string());
-    }
-
-    let base_url = normalize_base_url(&host)?;
-    let client = reqwest::blocking::Client::new();
-    let params = [
-        ("grant_type", "authorization_code"),
-        ("code", code.as_str()),
-        ("redirect_uri", redirect_uri.as_str()),
-        ("client_id", client_id.as_str()),
-        ("client_secret", client_secret.as_str()),
-    ];
-
-    let res = client
-        .post(format!("{}/api/v2/oauth2/token", base_url))
-        .form(&params)
-        .send()
-        .map_err(|e| format!("Không gọi được token endpoint: {e}"))?;
-
-    if !res.status().is_success() {
-        let status = res.status();
-        let text = res.text().unwrap_or_default();
-        return Err(format!(
-            "Không lấy được token ({}). {}",
-            status,
-            text
-        ));
-    }
-
-    let token = res
-        .json::<BacklogOAuthToken>()
-        .map_err(|e| format!("Không parse được token: {e}"))?;
-    Ok(token)
-}
+mod backlog_auth;
+use crate::backlog_auth::{get_backlog_auth_url, backlog_oauth_exchange, backlog_oauth_refresh, get_backlog_config};
 
 fn normalize_path(path: &Path) -> String {
     let mut s = path.to_string_lossy().replace('/', "\\");
@@ -1116,7 +1043,10 @@ pub fn run() {
             dotnet_run_stop,
             dotnet_run_is_running,
             sync_asset,
+            get_backlog_config,
+            get_backlog_auth_url,
             backlog_oauth_exchange,
+            backlog_oauth_refresh,
             run_sql_only,
             prepare_sql_temp_file,
             updater::check_update,
