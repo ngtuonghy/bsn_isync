@@ -1,0 +1,8 @@
+name = "tauri-updater-worker"
+main = "src/index.js"
+compatibility_date = "2024-03-22"
+
+# Bạn cần thêm GITHUB_OWNER và GITHUB_REPO trong dashboard Cloudflare hoặc file rỗng .dev.vars khi dev
+[vars]
+GITHUB_OWNER = "ngtuonghy"
+GITHUB_REPO = "bsn_isync"

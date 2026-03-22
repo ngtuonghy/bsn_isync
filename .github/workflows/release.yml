@@ -1,0 +1,56 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v1
+
+      - name: install frontend dependencies
+        run: bun install
+
+      - name: setup rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: create env file
+        run: |
+          echo "BACKLOG_HOST=${{ secrets.BACKLOG_HOST }}" > .env
+          echo "BACKLOG_CLIENT_ID=${{ secrets.BACKLOG_CLIENT_ID }}" >> .env
+          echo "BACKLOG_CLIENT_SECRET=${{ secrets.BACKLOG_CLIENT_SECRET }}" >> .env
+          echo "BACKLOG_REDIRECT_URI=${{ secrets.BACKLOG_REDIRECT_URI }}" >> .env
+
+      - name: build the app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          BACKLOG_HOST: ${{ secrets.BACKLOG_HOST }}
+          BACKLOG_CLIENT_ID: ${{ secrets.BACKLOG_CLIENT_ID }}
+          BACKLOG_CLIENT_SECRET: ${{ secrets.BACKLOG_CLIENT_SECRET }}
+          BACKLOG_REDIRECT_URI: ${{ secrets.BACKLOG_REDIRECT_URI }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'bsn_isync v__VERSION__'
+          releaseBody: 'See the assets below for the latest version.'
+          releaseDraft: false
+          prerelease: false
+

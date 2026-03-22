@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "bsn-isync",
+  "version": "0.1.21",
+  "identifier": "com.ngtuonghy.bsn-isync",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "bsn_isync",
+        "width": 900,
+        "height": 700,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://tauri-updater-worker.ngtuonghy.workers.dev/api/update/{{target}}/{{current_version}}"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYxRjREQTI1N0IwODMyMTQKUldRVU1naDdKZHIwWWFiK1BHSHcxRTRJdTQzWTRUSVhJUHFuY3AyWTVFK0l3ZzNOUVRyNldlWloK",
+      "dialog": false
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "bsn-isync"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": [
+          "English",
+          "Vietnamese"
+        ],
+        "displayLanguageSelector": true
+      }
+    }
+  }
+}
