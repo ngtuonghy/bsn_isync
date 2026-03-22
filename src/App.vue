@@ -201,24 +201,28 @@ const isUpdateReady = ref(false);
 async function checkForUpdates(manual = false) {
   try {
     if (manual) {
-      toast.info("Đang kiểm tra bản cập nhật...", { id: "updater-check" });
+      toast.info("Searching for new updates...", { id: "updater-check" });
     }
     const version = await invoke("check_update") as string | null;
     if (version) {
       updateVersion.value = version;
       console.log("[updater] update available:", version);
       if (manual) {
-        toast.success(`Tìm thấy bản cập nhật mới v${version}`, { id: "updater-check" });
+        toast.success(`A new update is available (v${version})`, { id: "updater-check" });
       }
     } else {
       if (manual) {
-        toast.info("Ứng dụng đã ở phiên bản mới nhất", { id: "updater-check" });
+        toast.info("You are running the latest version", { id: "updater-check" });
       }
     }
   } catch (e) {
     console.error("[updater] check failed:", e);
+    let errorMsg = String(e);
+    if (errorMsg.includes("None of the fallback platforms")) {
+      errorMsg = "No compatible update found for your platform (needs .zip).";
+    }
     if (manual) {
-        toast.error("Lỗi khi kiểm tra cập nhật", { description: String(e), id: "updater-check" });
+        toast.error("Update check failed", { description: errorMsg, id: "updater-check" });
     }
   }
 }
@@ -227,16 +231,16 @@ async function downloadUpdate() {
   if (isUpdateDownloading.value) return;
   isUpdateDownloading.value = true;
   try {
-    toast.info("Đang tải bản cập nhật...", {
-      description: `Bản cập nhật v${updateVersion.value} đang được tải xuống.`
+    toast.info("Downloading update...", {
+      description: `Version v${updateVersion.value} is being downloaded.`
     });
     await invoke("download_and_install_update");
     isUpdateReady.value = true;
-    toast.success("Đã tải xong bản cập nhật", {
-      description: "Vui lòng khởi động lại ứng dụng để áp dụng thay đổi."
+    toast.success("Update downloaded", {
+      description: "Please restart the application to apply the changes."
     });
   } catch (e: any) {
-    toast.error("Lỗi khi tải cập nhật", { description: String(e) });
+    toast.error("Download failed", { description: String(e) });
   } finally {
     isUpdateDownloading.value = false;
   }
@@ -1368,13 +1372,13 @@ onUnmounted(() => {
             <template v-if="isUpdateReady">
               <Button @click="applyUpdate" variant="default" size="sm" class="h-8 gap-1.5 px-3 bg-green-500 hover:bg-green-600 text-white shadow-lg shadow-green-500/20 animate-in fade-in zoom-in duration-300">
                 <RefreshCw class="size-3.5 animate-spin-slow" />
-                <span class="text-[11px] font-bold">Restart to Update</span>
+                <span class="text-[11px] font-bold">Restart Now</span>
               </Button>
             </template>
             <template v-else>
               <Button @click="downloadUpdate" :disabled="isUpdateDownloading" variant="secondary" size="sm" class="h-8 gap-1.5 px-3 transition-all">
                 <ArrowUpCircle class="size-3.5" :class="isUpdateDownloading ? 'animate-bounce' : ''" />
-                <span class="text-[11px] font-bold">{{ isUpdateDownloading ? 'Downloading...' : `Update v${updateVersion}` }}</span>
+                <span class="text-[11px] font-bold">{{ isUpdateDownloading ? 'Downloading...' : `Update Now (v${updateVersion})` }}</span>
               </Button>
             </template>
             <div class="h-4 w-px bg-border mx-1"></div>

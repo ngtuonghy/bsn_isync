@@ -8,6 +8,9 @@ export default {
       if (pathParts.length < 4 || pathParts[0] !== 'api' || pathParts[1] !== 'update') {
         return new Response("Not Found", { status: 404 });
       }
+
+      const target = pathParts[2];
+      const current_version = pathParts[3];
       
       console.log(`[worker] incoming request: ${target} ${current_version}`);
   
@@ -98,23 +101,45 @@ export default {
           return new Response(null, { status: 204 });
         }
   
-        console.log(`[worker] fetching signature content from: ${signatureAsset.browser_download_url}`);
-        const sigResponse = await fetch(signatureAsset.browser_download_url);
+        console.log(`[worker] fetching signature content from API: ${signatureAsset.url}`);
+        const sigResponse = await fetch(signatureAsset.url, {
+          headers: {
+            "Accept": "application/octet-stream",
+            "User-Agent": "Tauri-Updater-Worker",
+            ...(env.GITHUB_TOKEN ? { "Authorization": `Bearer ${env.GITHUB_TOKEN}` } : {})
+          }
+        });
+
         if (!sigResponse.ok) {
-           console.error(`[worker] failed to fetch signature: ${sigResponse.status}`);
-           throw new Error("Could not fetch signature");
+           console.error(`[worker] failed to fetch signature from API: ${sigResponse.status}`);
+           throw new Error(`Could not fetch signature (status: ${sigResponse.status})`);
         }
         const signatureText = await sigResponse.text();
+  
+        const platformData = {
+          signature: signatureText.trim(),
+          url: updateAsset.browser_download_url
+        };
   
         const responseJson = {
           version: latestVersion,
           notes: release.body || "New update available.",
           pub_date: release.published_at,
           platforms: {
-            [target]: {
-              signature: signatureText.trim(),
-              url: updateAsset.browser_download_url
-            }
+            ...(target.includes('windows') ? { 
+              "windows-x86_64-nsis": platformData,
+              "windows-x86_64": platformData,
+            } : {}),
+            ...(target.includes('darwin') || target.includes('macos') ? {
+               "darwin-x86_64": platformData,
+               "darwin-aarch64": platformData,
+               "macos-x86_64": platformData,
+               "macos-aarch64": platformData
+            } : {}),
+            ...(target.includes('linux') ? {
+               "linux-x86_64": platformData,
+               "linux-aarch64": platformData
+            } : {})
           }
         };
   
