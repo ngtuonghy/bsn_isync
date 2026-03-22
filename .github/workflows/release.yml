@@ -1,6 +1,8 @@
 name: Release
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -40,6 +42,6 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'bsn_isync v__VERSION__'
           releaseBody: 'See the assets below for the latest version.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
 
