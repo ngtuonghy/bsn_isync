@@ -36,10 +36,13 @@ fn normalize_base_url(host: &str) -> Result<String, String> {
 }
 
 fn get_backlog_env(key: &str) -> String {
-    env::var(key)
-        .or_else(|_| env::var(format!("VITE_{}", key)))
-        .map(|v| v.trim().to_string())
-        .unwrap_or_default()
+    match key {
+        "BACKLOG_HOST" => env!("BACKLOG_HOST").to_string(),
+        "BACKLOG_CLIENT_ID" => env!("BACKLOG_CLIENT_ID").to_string(),
+        "BACKLOG_CLIENT_SECRET" => env!("BACKLOG_CLIENT_SECRET").to_string(),
+        "BACKLOG_REDIRECT_URI" => env!("BACKLOG_REDIRECT_URI").to_string(),
+        _ => "".to_string(),
+    }
 }
 
 #[tauri::command]

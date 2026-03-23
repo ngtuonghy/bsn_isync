@@ -1,6 +1,6 @@
 [package]
 name = "bsn_isync"
-version = "0.1.7"
+version = "0.1.8"
 description = "A tool to sync Backlog and local tasks"
 authors = ["ngtuonhy"]
 edition = "2021"
@@ -16,6 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+dotenvy = "0.15"
 
 [dependencies]
 tauri = { version = "2", features = [] }
