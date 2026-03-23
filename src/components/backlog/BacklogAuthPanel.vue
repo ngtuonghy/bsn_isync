@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import type { BacklogProfile, BacklogProject } from "@/lib/backlogAuth";
 
-const props = defineProps<{
+defineProps<{
   host: string;
   apiKey: string;
   status: "idle" | "loading" | "success" | "error";
