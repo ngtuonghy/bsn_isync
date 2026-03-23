@@ -9,6 +9,7 @@
     "dialog:default",
     "opener:default",
     "updater:default",
-    "deep-link:default"
+    "deep-link:default",
+    "window-state:default"
   ]
 }

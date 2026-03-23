@@ -1657,7 +1657,7 @@ onUnmounted(() => {
 <template>
   <div class="min-h-screen bg-background bg-[radial-gradient(ellipse_at_top_right,var(--tw-gradient-stops))] from-primary/5 via-background to-background text-foreground overflow-x-hidden selection:bg-primary/20">
     <header class="border-b border-black/5 dark:border-white/5 bg-card/60 backdrop-blur-xl sticky top-0 z-50 shadow-sm">
-      <div class="px-6 py-2.5 flex items-center justify-between">
+      <div class="px-6 py-1.5 flex items-center justify-between">
         <div class="flex items-center gap-2">
           <div class="h-7 w-7 rounded-md bg-primary text-primary-foreground grid place-items-center text-xs font-semibold">IS</div>
           <div class="flex flex-col select-none">
@@ -1737,7 +1737,7 @@ onUnmounted(() => {
 
         <TabsContent value="runner" class="flex-1 min-h-0 m-0 border-0 p-0 outline-none">
           <section class="flex h-full gap-4 items-stretch overflow-hidden">
-            <div ref="mainScrollRef" class="w-[55%] min-h-0 flex flex-col gap-6 pt-4 pl-6 pr-4 pb-8 overflow-y-auto overflow-x-hidden custom-scrollbar">
+            <div ref="mainScrollRef" class="w-[55%] min-h-0 flex flex-col gap-6 pt-2 pl-6 pr-4 pb-0 overflow-hidden">
               <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 ring-1 ring-black/5 dark:ring-white/10 overflow-hidden backdrop-blur-2xl">
                 <div class="px-4 py-3 border-b border-white/5 flex items-center justify-between">
                   <div class="flex items-center gap-3">
@@ -1812,9 +1812,6 @@ onUnmounted(() => {
                               <Home class="size-4" :class="selectedOwner === currentUser && profileScope === 'personal' ? 'scale-110' : ''" />
                             </Button>
                           </div>
-
-                          <!-- Row 3: Target Project (Scanned) -->
-                    
 
                           <!-- Row 4: Search -->
                           <div class="relative w-full">
@@ -1918,8 +1915,7 @@ onUnmounted(() => {
                           </template>
                           <div v-else class="flex-1 flex flex-col gap-1 min-w-0">
                             <button class="w-full text-left group/header flex flex-col gap-0.5" @click="startEditingProfileName">
-                              <div class="flex items-center gap-2.5">
-                                <div class="h-2 w-2 rounded-full bg-primary/20 group-hover/header:bg-primary transition-all duration-500 shadow-[0_0_8px_rgba(var(--primary),0.2)]"></div>
+                              <div class="flex items-center gap-2">
                                 <span class="text-[16px] font-black tracking-tight leading-tight group-hover/header:text-primary transition-colors break-words">{{ selectedProfile?.name || 'No Profile Selected' }}</span>
                                 <Pencil v-if="canEditSelected" class="size-3.5 opacity-0 group-hover/header:opacity-40 transition-opacity shrink-0 translate-y-0.5" />
                               </div>
@@ -1933,8 +1929,17 @@ onUnmounted(() => {
                             </button>
                           </div>
                         </div>
-                        <div class="flex items-center gap-1 ml-2">
-                          <!-- Delete moved to bottom -->
+                        <div class="flex items-center gap-1 ml-auto">
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            class="h-8 w-8 rounded-xl text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
+                            title="Xóa Profile"
+                            :disabled="runner.running || !canEditSelected"
+                            @click="deleteSelectedSetupProfile"
+                          >
+                            <Trash2 class="size-4" />
+                          </Button>
                         </div>
                       </div>
 
@@ -2047,32 +2052,20 @@ onUnmounted(() => {
                         <div class="flex items-center justify-between">
                           <Label class="text-[10px] uppercase font-bold text-muted-foreground">SQL Script / Query</Label>
                         </div>
-                        <Textarea v-model="runner.sqlSetupPath" class="min-h-[120px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Dán mã SQL tại đây (Hỗ trợ tiếng Nhật/Việt)..." />
+                        <Textarea v-model="runner.sqlSetupPath" class="min-h-[200px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Dán mã SQL tại đây (Hỗ trợ tiếng Nhật/Việt)..." />
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="config" class="mt-0 space-y-3">
+                      <div class="space-y-1.5 pt-1">
+                        <div class="flex items-center justify-between">
+                          <Label class="text-[10px] uppercase font-bold text-muted-foreground">App.config Template</Label>
+                          <span class="text-[9px] text-muted-foreground opacity-50 italic">Auto-syncs with EXE & BAT</span>
+                        </div>
+                        <Textarea v-model="runner.configTemplate" class="min-h-[200px] max-h-[500px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="XML Config Template..." />
                       </div>
                     </TabsContent>
                   </Tabs>
 
-                  <!-- Danger Zone (Production Standard) -->
-                  <div class="mt-8 pt-6 border-t border-destructive/10">
-                    <div class="px-1 py-1 rounded-2xl bg-destructive/5 border border-destructive/10">
-                      <div class="flex items-center justify-between p-3">
-                        <div class="flex flex-col gap-0.5">
-                          <span class="text-[10px] font-bold text-destructive uppercase tracking-widest">Danger Zone</span>
-                          <span class="text-[10px] text-muted-foreground font-medium opacity-70">Xóa vĩnh viễn profile này cùng tất cả cài đặt liên quan.</span>
-                        </div>
-                        <Button 
-                          variant="ghost" 
-                          size="sm"
-                          class="h-8 px-3 text-[10px] font-bold text-destructive hover:bg-destructive hover:text-destructive-foreground rounded-lg transition-all group/del" 
-                          :disabled="runner.running || !canEditSelected" 
-                          @click="deleteSelectedSetupProfile"
-                        >
-                          <Trash2 class="size-3.5 mr-2 group-hover:animate-bounce" />
-                          DELETE PROFILE
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
                 </div>
               </section>
 
@@ -2080,7 +2073,7 @@ onUnmounted(() => {
 
             </div>
 
-            <div class="flex-1 h-full flex flex-col gap-4 min-w-0 pt-4 pr-6 pl-2 pb-8 overflow-y-auto custom-scrollbar">
+            <div class="flex-1 h-full flex flex-col gap-4 min-w-0 pt-2 pr-6 pl-2 pb-0 overflow-hidden">
 
 
               <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl">
