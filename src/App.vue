@@ -259,7 +259,7 @@ async function applyUpdate() {
   try {
     await invoke("restart_app");
   } catch (e: any) {
-    toast.error("Lỗi khi khởi động lại", { description: String(e) });
+    toast.error("Error while restarting", { description: String(e) });
   }
 }
 
@@ -442,7 +442,7 @@ async function startBacklogOAuthLogin() {
     backlog.status = "error";
     const msg = String(e);
     backlog.error = msg;
-    toast.error("Lỗi đăng nhập Backlog", { description: msg });
+    toast.error("Backlog login error", { description: msg });
     return;
   }
 
@@ -479,7 +479,7 @@ async function handleBacklogOAuthUrl(urlString: string) {
     backlog.status = "error";
     const msg = `OAuth2 error: ${errorDescription || error}`;
     backlog.error = msg;
-    toast.error("Lỗi OAuth2 Backlog", { description: msg });
+    toast.error("Backlog OAuth2 error", { description: msg });
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
@@ -500,7 +500,7 @@ async function handleBacklogOAuthUrl(urlString: string) {
 
   if (!code) {
     backlog.status = "error";
-    const msg = "Thiếu authorization code";
+    const msg = "Missing authorization code";
     backlog.error = msg;
     toast.error(msg);
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
@@ -509,7 +509,7 @@ async function handleBacklogOAuthUrl(urlString: string) {
 
   if (!state || !expectedState || state !== expectedState) {
     backlog.status = "error";
-    const msg = "State không hợp lệ (mismatch)";
+    const msg = "Invalid state (mismatch)";
     backlog.error = msg;
     toast.error(msg);
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
@@ -530,9 +530,9 @@ async function handleBacklogOAuthUrl(urlString: string) {
     }
   } catch (e: any) {
     backlog.status = "error";
-    const msg = `Không lấy được token: ${String(e)}`;
+    const msg = `Could not get token: ${String(e)}`;
     backlog.error = msg;
-    toast.error("Lỗi trao đổi Token", { description: String(e) });
+    toast.error("Token exchange error", { description: String(e) });
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
@@ -548,7 +548,7 @@ async function handleBacklogOAuthUrl(urlString: string) {
   if (profileResult.status === "error") {
     backlog.status = "error";
     backlog.error = profileResult.error;
-    toast.error("Lỗi lấy Profile Backlog", { description: profileResult.error });
+    toast.error("Error fetching Backlog profile", { description: profileResult.error });
     if (shouldResetHistory) window.history.replaceState({}, "", "/");
     return;
   }
@@ -562,8 +562,8 @@ async function handleBacklogOAuthUrl(urlString: string) {
   // Auto load projects after login
   await loadBacklogProjects();
   loadBacklogIssues();
-  toast.success(`Chào mừng trở lại, ${profileResult.profile.name}!`, { 
-    description: "Bạn đã đăng nhập Backlog thành công." 
+  toast.success(`Welcome back, ${profileResult.profile.name}!`, { 
+    description: "You have successfully logged into Backlog." 
   });
 }
 
@@ -576,7 +576,7 @@ function handleBacklogLogout() {
   backlog.issueTypes = [];
   selectedOwner.value = currentUser.value; // Reset to Guest/Me
   saveUIState();
-  toast.success("Đã đăng xuất Backlog");
+  toast.success("Logged out of Backlog");
 }
 
 // background refresh timer
@@ -600,7 +600,7 @@ async function ensureValidBacklogToken() {
       }
     } catch (e) {
       console.error("[backlog-auth] Failed to refresh token:", e);
-      toast.error("Lỗi tự động refresh token Backlog", { description: String(e) });
+      toast.error("Backlog token auto-refresh error", { description: String(e) });
       return false;
     }
   }
@@ -1073,7 +1073,7 @@ watch(selectedSetupId, (next, prev) => {
 function applySelectedSetupProfile(silent = false) {
   const setup = setupProfiles.value.find((x) => x.id === selectedSetupId.value);
   if (!setup) {
-    if (!silent) toast.error("Setup profile chưa được chọn");
+    if (!silent) toast.error("Setup profile not selected");
     return;
   }
   applySetupToRunner(setup);
@@ -1191,11 +1191,11 @@ function deleteSelectedSetupProfile() {
     return;
   }
   if (!canEditSelected.value) {
-    toast.error("Chỉ người tạo mới được xóa profile này");
+    toast.error("Only the creator can delete this profile");
     return;
   }
   if (setupProfiles.value.length <= 1) {
-    toast.error("Cần giữ ít nhất 1 setup");
+    toast.error("Must keep at least 1 setup");
     return;
   }
   const idx = setupProfiles.value.findIndex((x) => x.id === selectedSetupId.value);
@@ -1348,7 +1348,7 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
   
   saveCurrentToSelectedSetupProfile();
   if (!validatePaths()) {
-    toast.error("Vui lòng nhập projectRoot và startupProject");
+    toast.error("Please enter projectRoot and startupProject");
     runner.loadingTarget = null;
     return;
   }
@@ -1417,7 +1417,7 @@ async function rebuild() {
   runner.loadingTarget = "rebuild";
   saveCurrentToSelectedSetupProfile();
   if (!validatePaths()) {
-    toast.error("Vui lòng nhập projectRoot và startupProject");
+    toast.error("Please enter projectRoot and startupProject");
     runner.loadingTarget = null;
     return;
   }
@@ -1454,20 +1454,20 @@ async function browseBatFile() {
 
 async function runSqlOnly() {
   if (!runner.sqlServer?.trim()) {
-    toast.error("Vui lòng nhập Server SQL");
+    toast.error("Please enter SQL Server");
     return;
   }
   if (!runner.sqlDatabase?.trim()) {
-    toast.error("Vui lòng nhập Database name");
+    toast.error("Please enter Database name");
     return;
   }
   if (!runner.useWindowsAuth && (!runner.sqlUser?.trim() || !runner.sqlPassword?.trim())) {
-    toast.error("Vui lòng nhập Username/Password cho SQL");
+    toast.error("Please enter SQL Username/Password");
     return;
   }
   if (!runner.sqlSetupPath || !runner.sqlSetupPath.trim()) {
-    toast.error("Thiếu nội dung SQL", {
-      description: "Vui lòng nhập đường dẫn file .sql hoặc mã SQL trực tiếp vào ô bên dưới."
+    toast.error("Missing SQL content", {
+      description: "Please enter .sql file path or SQL code directly in the box below."
     });
     return;
   }
@@ -1729,7 +1729,7 @@ onUnmounted(() => {
               <Button variant="ghost" class="h-7 text-[11px] px-2.5 hover:bg-accent transition-all" @click="pickProjectFolder">Browse</Button>
               <Button variant="secondary" class="h-7 text-[11px] px-3 font-semibold shadow-sm" @click="discoverProjects">
                 <ScanSearch class="size-3.5 mr-1" />
-                Quét
+                Scan
               </Button>
             </div>
           </div>
@@ -1752,7 +1752,7 @@ onUnmounted(() => {
                     @click="createNewSetupProfile"
                   >
                     <Plus class="size-3.5 mr-1" /> Create
-                    <span v-if="backlog.status !== 'success'" class="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-black/95 text-[9px] text-white rounded-md shadow-xl opacity-0 group-hover/create:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Đăng nhập để tạo</span>
+                    <span v-if="backlog.status !== 'success'" class="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-black/95 text-[9px] text-white rounded-md shadow-xl opacity-0 group-hover/create:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Log in to create</span>
                   </Button>
                 </div>
                 
@@ -1838,7 +1838,7 @@ onUnmounted(() => {
                             <div class="flex items-center gap-1.5 overflow-hidden">
                               <div class="h-1.5 w-1.5 rounded-full bg-primary/40 group-hover/item:bg-primary transition-colors shrink-0"></div>
                               <div class="text-[10px] text-muted-foreground truncate font-medium tracking-tight opacity-70 group-hover/item:opacity-100 transition-opacity">
-                                {{ discoveredProjects.find(p => p.root === setup.projectRoot)?.name || setup.projectRoot?.split('\\').pop() || "Chưa chọn dự án" }}
+                                {{ discoveredProjects.find(p => p.root === setup.projectRoot)?.name || setup.projectRoot?.split('\\').pop() || "No project selected" }}
                               </div>
                             </div>
                         </button>
@@ -1857,7 +1857,7 @@ onUnmounted(() => {
                                     ref="profileNameInput" 
                                     v-model="editableProfileName" 
                                     class="font-black h-10 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-[15px] px-2.5 flex-1 min-w-0" 
-                                    placeholder="Tên profile hoặc tìm issue..."
+                                    placeholder="Profile name or search issue..."
                                     @focus="showIssueSearch = true"
                                     @keydown.enter="commitProfileName" 
                                   />
@@ -1887,7 +1887,7 @@ onUnmounted(() => {
                               <div v-if="showIssueSearch && backlog.profile" 
                                    class="absolute top-12 left-0 w-full z-50 bg-card/95 backdrop-blur-xl border border-primary/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 origin-top">
                                 <div class="p-2 border-b border-white/5 bg-primary/5 flex items-center justify-between">
-                                  <span class="text-[9px] font-bold text-muted-foreground uppercase tracking-widest pl-2">Gợi ý từ Backlog</span>
+                                  <span class="text-[9px] font-bold text-muted-foreground uppercase tracking-widest pl-2">Suggestions from Backlog</span>
                                   <Button variant="ghost" size="icon" class="h-5 w-5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive" @click="showIssueSearch = false">
                                     <Plus class="size-3 rotate-45" />
                                   </Button> 
@@ -1895,7 +1895,7 @@ onUnmounted(() => {
                                 <div class="max-h-[300px] overflow-y-auto custom-scrollbar p-1">
                                   <div v-if="filteredBacklogIssues.length === 0" class="py-12 text-center">
                                     <Search class="size-8 mx-auto opacity-10 mb-2" />
-                                    <p class="text-[10px] uppercase font-bold text-muted-foreground opacity-40">Không tìm thấy issue</p>
+                                    <p class="text-[10px] uppercase font-bold text-muted-foreground opacity-40">No issues found</p>
                                   </div>
                                   <button v-for="issue in filteredBacklogIssues.slice(0, 15)" :key="issue.id"
                                           class="w-full flex flex-col items-start p-2.5 rounded-xl transition-all hover:bg-primary/10 group/item text-left"
@@ -1908,7 +1908,7 @@ onUnmounted(() => {
                                   </button>
                                 </div>
                                 <div class="p-2 bg-muted/30 border-t border-white/5 flex items-center justify-center">
-                                  <span class="text-[8px] text-muted-foreground opacity-40 italic">Kết quả từ dự án: {{ runner.backlogProjectKey }}</span>
+                                  <span class="text-[8px] text-muted-foreground opacity-40 italic">Results from project: {{ runner.backlogProjectKey }}</span>
                                 </div>
                               </div>
                             </div>
@@ -1934,7 +1934,7 @@ onUnmounted(() => {
                             variant="ghost" 
                             size="icon" 
                             class="h-8 w-8 rounded-xl text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
-                            title="Xóa Profile"
+                            title="Delete Profile"
                             :disabled="runner.running || !canEditSelected"
                             @click="deleteSelectedSetupProfile"
                           >
@@ -1949,7 +1949,7 @@ onUnmounted(() => {
                         <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject">
                           <SelectTrigger class="w-full h-9 bg-muted/20 border-input">
                             <div class="truncate max-w-full font-medium">
-                              <SelectValue placeholder="Quét dự án để chọn...">
+                              <SelectValue placeholder="Scan projects to select...">
                                 {{ discoveredProjects.find(p => p.root === selectedProjectRoot)?.name }}
                               </SelectValue>
                             </div>
@@ -2052,7 +2052,7 @@ onUnmounted(() => {
                         <div class="flex items-center justify-between">
                           <Label class="text-[10px] uppercase font-bold text-muted-foreground">SQL Script / Query</Label>
                         </div>
-                        <Textarea v-model="runner.sqlSetupPath" class="min-h-[200px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Dán mã SQL tại đây (Hỗ trợ tiếng Nhật/Việt)..." />
+                        <Textarea v-model="runner.sqlSetupPath" class="min-h-[200px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Paste SQL code here (Supports Japanese/Vietnamese)..." />
                       </div>
                     </TabsContent>
                     <TabsContent value="config" class="mt-0 space-y-3">

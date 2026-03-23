@@ -22,7 +22,7 @@ pub struct BacklogConfig {
 fn normalize_base_url(host: &str) -> Result<String, String> {
     let trimmed = host.trim();
     if trimmed.is_empty() {
-        return Err("BACKLOG_HOST chưa được cấu hình".to_string());
+        return Err("BACKLOG_HOST is not configured".to_string());
     }
     let mut base = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_string()
@@ -48,9 +48,7 @@ pub fn get_backlog_config() -> Result<BacklogConfig, String> {
     let client_id = get_backlog_env("BACKLOG_CLIENT_ID");
     let redirect_uri = get_backlog_env("BACKLOG_REDIRECT_URI");
 
-    println!("[backlog-config] host: {}", host);
-    println!("[backlog-config] client_id: {}", client_id);
-    println!("[backlog-config] redirect_uri: {}", redirect_uri);
+
 
     Ok(BacklogConfig {
         host,
@@ -65,16 +63,16 @@ pub fn get_backlog_auth_url(state: String) -> Result<String, String> {
     let client_id = get_backlog_env("BACKLOG_CLIENT_ID");
     let redirect_uri = get_backlog_env("BACKLOG_REDIRECT_URI");
 
-    println!("[backlog-auth] Generating auth URL. host={}, client_id={}, redirect_uri={}", host, client_id, redirect_uri);
+
 
     if host.is_empty() {
-        return Err("Thiếu BACKLOG_HOST trong .env".to_string());
+        return Err("Missing BACKLOG_HOST in .env".to_string());
     }
     if client_id.is_empty() {
-        return Err("Thiếu BACKLOG_CLIENT_ID trong .env".to_string());
+        return Err("Missing BACKLOG_CLIENT_ID in .env".to_string());
     }
     if redirect_uri.is_empty() {
-        return Err("Thiếu BACKLOG_REDIRECT_URI trong .env".to_string());
+        return Err("Missing BACKLOG_REDIRECT_URI in .env".to_string());
     }
 
     let base_url = normalize_base_url(&host)?;
@@ -86,7 +84,7 @@ pub fn get_backlog_auth_url(state: String) -> Result<String, String> {
         encode(&redirect_uri),
         encode(&state)
     );
-    println!("[backlog-auth] Generated URL: {}", url);
+
     Ok(url)
 }
 
@@ -97,20 +95,19 @@ pub fn backlog_oauth_exchange(code: String) -> Result<BacklogOAuthToken, String>
     let client_secret = get_backlog_env("BACKLOG_CLIENT_SECRET");
     let redirect_uri = get_backlog_env("BACKLOG_REDIRECT_URI");
 
-    println!("[backlog-auth] Exchanging token. host={}, client_id={}, client_secret_len={}, redirect_uri={}", 
-        host, client_id, client_secret.len(), redirect_uri);
+
 
     if host.is_empty() {
-        return Err("Thiếu BACKLOG_HOST".to_string());
+        return Err("Missing BACKLOG_HOST".to_string());
     }
     if client_id.is_empty() {
-        return Err("Thiếu BACKLOG_CLIENT_ID".to_string());
+        return Err("Missing BACKLOG_CLIENT_ID".to_string());
     }
     if client_secret.is_empty() {
-        return Err("Thiếu BACKLOG_CLIENT_SECRET".to_string());
+        return Err("Missing BACKLOG_CLIENT_SECRET".to_string());
     }
     if redirect_uri.is_empty() {
-        return Err("Thiếu BACKLOG_REDIRECT_URI".to_string());
+        return Err("Missing BACKLOG_REDIRECT_URI".to_string());
     }
 
     let base_url = normalize_base_url(&host)?;
@@ -129,7 +126,7 @@ pub fn backlog_oauth_exchange(code: String) -> Result<BacklogOAuthToken, String>
         .header("Content-Type", "application/x-www-form-urlencoded")
         .form(&params)
         .send()
-        .map_err(|e| format!("Lỗi kết nối API: {}", e))?;
+        .map_err(|e| format!("API connection error: {}", e))?;
 
     let status = res.status();
     let body = res.text().unwrap_or_default();
@@ -137,11 +134,11 @@ pub fn backlog_oauth_exchange(code: String) -> Result<BacklogOAuthToken, String>
     println!("[backlog-auth] Token exchange response status: {}", status);
     if !status.is_success() {
         println!("[backlog-auth] Error body: {}", body);
-        return Err(format!("Lỗi exchange token ({}): {}", status, body));
+        return Err(format!("Token exchange error ({}): {}", status, body));
     }
 
     let mut token: BacklogOAuthToken = serde_json::from_str(&body)
-        .map_err(|e| format!("Lỗi phân giải JSON token: {} | Nội dung: {}", e, body))?;
+        .map_err(|e| format!("JSON token parse error: {} | Content: {}", e, body))?;
     
     token.host = host; // Populate host for frontend sync
 
@@ -155,17 +152,16 @@ pub fn backlog_oauth_refresh(refresh_token: String) -> Result<BacklogOAuthToken,
     let client_id = get_backlog_env("BACKLOG_CLIENT_ID");
     let client_secret = get_backlog_env("BACKLOG_CLIENT_SECRET");
 
-    println!("[backlog-auth] Refreshing token. host={}, client_id={}, client_secret_len={}", 
-        host, client_id, client_secret.len());
+
 
     if host.is_empty() {
-        return Err("Thiếu BACKLOG_HOST".to_string());
+        return Err("Missing BACKLOG_HOST".to_string());
     }
     if client_id.is_empty() {
-        return Err("Thiếu BACKLOG_CLIENT_ID".to_string());
+        return Err("Missing BACKLOG_CLIENT_ID".to_string());
     }
     if client_secret.is_empty() {
-        return Err("Thiếu BACKLOG_CLIENT_SECRET".to_string());
+        return Err("Missing BACKLOG_CLIENT_SECRET".to_string());
     }
 
     let base_url = normalize_base_url(&host)?;
@@ -183,7 +179,7 @@ pub fn backlog_oauth_refresh(refresh_token: String) -> Result<BacklogOAuthToken,
         .header("Content-Type", "application/x-www-form-urlencoded")
         .form(&params)
         .send()
-        .map_err(|e| format!("Lỗi kết nối API: {}", e))?;
+        .map_err(|e| format!("API connection error: {}", e))?;
 
     let status = res.status();
     let body = res.text().unwrap_or_default();
@@ -191,11 +187,11 @@ pub fn backlog_oauth_refresh(refresh_token: String) -> Result<BacklogOAuthToken,
     println!("[backlog-auth] Token refresh response status: {}", status);
     if !status.is_success() {
         println!("[backlog-auth] Error body: {}", body);
-        return Err(format!("Lỗi refresh token ({}): {}", status, body));
+        return Err(format!("Token refresh error ({}): {}", status, body));
     }
 
     let mut token: BacklogOAuthToken = serde_json::from_str(&body)
-        .map_err(|e| format!("Lỗi phân giải JSON token: {} | Nội dung: {}", e, body))?;
+        .map_err(|e| format!("JSON token parse error: {} | Content: {}", e, body))?;
     
     token.host = host; // Populate host for frontend sync
 

@@ -84,7 +84,7 @@ function initials(name: string) {
           
           <div class="h-5 w-px bg-border/80 mx-0.5"></div>
           
-          <button class="p-2 text-muted-foreground/70 hover:text-destructive hover:bg-destructive/10 rounded-full transition-all duration-300 active:scale-90" @click="emit('logout')" title="Ngắt kết nối Backlog">
+          <button class="p-2 text-muted-foreground/70 hover:text-destructive hover:bg-destructive/10 rounded-full transition-all duration-300 active:scale-90" @click="emit('logout')" title="Disconnect Backlog">
             <LogOut class="h-4 w-4" />
           </button>
         </div>
@@ -105,7 +105,7 @@ function initials(name: string) {
                 <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-60"></span>
                 <span class="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
               </span>
-              {{ status === 'loading' ? 'Đang kết nối...' : 'Đăng nhập Backlog' }}
+              {{ status === 'loading' ? 'Connecting...' : 'Login to Backlog' }}
             </span>
           </Button>
 

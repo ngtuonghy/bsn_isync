@@ -166,10 +166,10 @@ fn validate_startup_abs(root: &Path, startup_rel: &str) -> Result<PathBuf, Strin
         clean_rel = clean_rel[4..].to_string();
     }
     let startup_abs = root.join(&clean_rel);
-    let root_canon = fs::canonicalize(root).map_err(|e| format!("Project root không hợp lệ: {e}"))?;
-    let startup_canon = fs::canonicalize(&startup_abs).map_err(|e| format!("Startup project không tồn tại: {e}\n(Path: {})", clean_rel))?;
+    let root_canon = fs::canonicalize(root).map_err(|e| format!("Invalid project root: {e}"))?;
+    let startup_canon = fs::canonicalize(&startup_abs).map_err(|e| format!("Startup project does not exist: {e}\n(Path: {})", clean_rel))?;
     if !startup_canon.starts_with(&root_canon) {
-        return Err("Startup project nằm ngoài project root".to_string());
+        return Err("Startup project is outside of project root".to_string());
     }
     let s = startup_canon.to_string_lossy().to_string();
     if s.starts_with(r#"\\?\"#) {
@@ -182,11 +182,30 @@ fn validate_startup_abs(root: &Path, startup_rel: &str) -> Result<PathBuf, Strin
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+fn new_command(program: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(program);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
+}
+
 fn run_capture(mut cmd: Command) -> Result<CommandResult, String> {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
-    let output = cmd.output().map_err(|e| format!("Không chạy được command: {e}"))?;
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("Program not found. Please ensure it is installed and added to PATH: {e}")
+        } else {
+            format!("Failed to execute command: {e}")
+        }
+    })?;
     Ok(CommandResult {
         code: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -255,11 +274,11 @@ fn copy_alias_exe_and_config(
     }
     let project_dir = startup_abs
         .parent()
-        .ok_or_else(|| "Không xác định được thư mục project".to_string())?;
+        .ok_or_else(|| "Could not determine project directory".to_string())?;
     let startup_file_name = startup_abs
         .file_name()
         .and_then(|x| x.to_str())
-        .ok_or_else(|| "Startup project không hợp lệ".to_string())?;
+        .ok_or_else(|| "Invalid startup project".to_string())?;
     let source_exe_name = startup_file_name.replace(".csproj", ".exe");
 
     let mut custom_out = None;
@@ -296,13 +315,13 @@ fn copy_alias_exe_and_config(
         alias.clone()
     };
     let dst = project_dir.join("bin").join(&config).join(&final_alias);
-    fs::create_dir_all(dst.parent().unwrap()).map_err(|e| format!("Không tạo được thư mục bin: {e}"))?;
-    let _root_canon = fs::canonicalize(root).map_err(|e| format!("Project root không hợp lệ: {e}"))?;
-    let src_canon = fs::canonicalize(&src).map_err(|e| format!("Không tìm thấy file exe sau build: {e}"))?;
+    fs::create_dir_all(dst.parent().unwrap()).map_err(|e| format!("Could not create bin directory: {e}"))?;
+    let _root_canon = fs::canonicalize(root).map_err(|e| format!("Invalid project root: {e}"))?;
+    let src_canon = fs::canonicalize(&src).map_err(|e| format!("EXE file not found after build: {e}"))?;
     // Cho phép source exe nằm ngoài project root vì nhiều `.csproj` cấu hình xuất ra thư mục chung (vd: ..\..\batch\EXE\)
     
     // Ensure the destination file is not in use before copying
-    let mut kill_cmd = Command::new("taskkill");
+    let mut kill_cmd = new_command("taskkill");
     #[cfg(windows)]
     kill_cmd.creation_flags(CREATE_NO_WINDOW);
     
@@ -312,13 +331,13 @@ fn copy_alias_exe_and_config(
     // A small delay to ensure the OS has released the file handles
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    fs::copy(&src_canon, &dst).map_err(|e| format!("Copy exe sang alias thất bại: {e}"))?;
+    fs::copy(&src_canon, &dst).map_err(|e| format!("Failed to copy exe to alias: {e}"))?;
     let config_path = dst.with_extension("exe.config");
     let template = config_template
         .map(|x| x.trim().to_string())
         .filter(|x| !x.is_empty())
         .unwrap_or_else(|| build_default_config_template(&alias));
-    fs::write(&config_path, template).map_err(|e| format!("Ghi file config thất bại: {e}"))?;
+    fs::write(&config_path, template).map_err(|e| format!("Failed to write config file: {e}"))?;
     Ok(Some(format!(
         "Copied {} -> {}\nWrote config {}",
         normalize_path(&src_canon),
@@ -328,7 +347,7 @@ fn copy_alias_exe_and_config(
 }
 
 fn collect_source_fingerprint(path: &Path, acc: &mut u64) -> Result<(), String> {
-    let entries = fs::read_dir(path).map_err(|e| format!("Không đọc được thư mục {}: {e}", normalize_path(path)))?;
+    let entries = fs::read_dir(path).map_err(|e| format!("Could not read directory {}: {e}", normalize_path(path)))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("Lỗi đọc entry: {e}"))?;
         let p = entry.path();
@@ -382,7 +401,7 @@ fn run_sql_setup_if_needed(
         return Ok(None);
     }
     
-    let mut cmd = Command::new("sqlcmd");
+    let mut cmd = new_command("sqlcmd");
     
     if use_windows_auth.unwrap_or(true) {
         cmd.arg("-E");
@@ -412,7 +431,7 @@ fn run_sql_setup_if_needed(
         let temp_dir = std::env::temp_dir();
         let file_name = format!("bsn_isync_sql_{}.sql", std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
         let tp = temp_dir.join(file_name);
-        fs::write(&tp, input).map_err(|e| format!("Lỗi tạo file sql tạm: {}", e))?;
+        fs::write(&tp, input).map_err(|e| format!("Error creating temporary SQL file: {}", e))?;
         Some(tp)
     } else {
         None
@@ -434,7 +453,7 @@ fn run_sql_setup_if_needed(
 }
 
 fn collect_project_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = fs::read_dir(dir).map_err(|e| format!("Không đọc được thư mục {}: {e}", normalize_path(dir)))?;
+    let entries = fs::read_dir(dir).map_err(|e| format!("Could not read directory {}: {e}", normalize_path(dir)))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("Lỗi đọc entry: {e}"))?;
         let path = entry.path();
@@ -486,7 +505,7 @@ fn pick_file(app: AppHandle, default_path: Option<String>) -> Result<Option<Stri
 #[tauri::command]
 fn discover_projects(root: String) -> Result<Vec<ProjectCandidate>, String> {
     let root_path = normalize_input_path(&root);
-    let root_canon = fs::canonicalize(&root_path).map_err(|e| format!("Project root không hợp lệ: {e}"))?;
+    let root_canon = fs::canonicalize(&root_path).map_err(|e| format!("Invalid project root: {e}"))?;
     let mut files = Vec::new();
     collect_project_files(&root_canon, &mut files)?;
 
@@ -553,7 +572,7 @@ fn get_receive_batch_action(startup_abs: &Path) -> Option<PathBuf> {
 fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> {
     let root = normalize_input_path(&request.project_root);
     let startup_abs = validate_startup_abs(&root, &request.startup_project)?;
-    let mut cmd = Command::new("dotnet");
+    let mut cmd = new_command("dotnet");
     cmd.current_dir(&root);
     let mode = request.mode.to_ascii_lowercase();
     let config = get_build_config(request.build_config.as_ref());
@@ -562,13 +581,13 @@ fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> {
     } else if mode == "build" {
         cmd.arg("build").arg(&startup_abs).arg("-c").arg(&config);
     } else {
-        return Err("Mode không hợp lệ, chỉ hỗ trợ restore/build".to_string());
+        return Err("Invalid mode, only restore/build supported".to_string());
     }
     let mut output = run_capture(cmd)?;
     if mode == "build" && output.code == 0 {
         let mut target_abs = startup_abs.clone();
         if let Some(rba) = get_receive_batch_action(&startup_abs) {
-            let mut rba_build = Command::new("dotnet");
+            let mut rba_build = new_command("dotnet");
             rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
             let rba_out = run_capture(rba_build)?;
             output.stdout = format!("{}\n[ReceiveBatchAction]\n{}", output.stdout, rba_out.stdout);
@@ -607,7 +626,7 @@ fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
     let project_dir = startup_abs.parent().unwrap();
     let startup_file = startup_abs.file_name().unwrap();
 
-    let mut restore = Command::new("dotnet");
+    let mut restore = new_command("dotnet");
     restore
         .current_dir(project_dir)
         .arg("restore")
@@ -621,7 +640,7 @@ fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
         });
     }
     let config = get_build_config(request.build_config.as_ref());
-    let mut build = Command::new("dotnet");
+    let mut build = new_command("dotnet");
     build
         .current_dir(project_dir)
         .arg("build")
@@ -633,7 +652,7 @@ fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
 
     if build_out.code == 0 {
         if let Some(rba) = get_receive_batch_action(&startup_abs) {
-            let mut rba_build = Command::new("dotnet");
+            let mut rba_build = new_command("dotnet");
             rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
             let rba_out = run_capture(rba_build)?;
             build_out.stdout = format!("{}\n[ReceiveBatchAction]\n{}", build_out.stdout, rba_out.stdout);
@@ -717,7 +736,7 @@ fn dotnet_run_start(
             let _ = app.emit("runner-log", format!("[BUILD] Building target project for test: {}...", startup_file_name));
             drop(guard);
             
-            let mut build = Command::new("dotnet");
+            let mut build = new_command("dotnet");
             build.current_dir(project_dir).arg("build").arg(startup_file_name).arg("-c").arg(&config);
             let build_out = run_capture(build)?;
             
@@ -732,7 +751,7 @@ fn dotnet_run_start(
             let _ = app.emit("build-status", "building");
             let _ = app.emit("runner-log", "[BUILD] Rebuilding project...");
             drop(guard);
-            let mut build = Command::new("dotnet");
+            let mut build = new_command("dotnet");
             build
                 .current_dir(project_dir)
                 .arg("build")
@@ -759,7 +778,7 @@ fn dotnet_run_start(
             if let Some(rba) = get_receive_batch_action(&startup_abs) {
                 let _ = app.emit("build-status", "building_rba");
                 let _ = app.emit("runner-log", "[UPDATE] Updating ReceiveBatchAction...");
-                let mut rba_build = Command::new("dotnet");
+                let mut rba_build = new_command("dotnet");
                 rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
                 let rba_out = run_capture(rba_build)?;
                 if !rba_out.stdout.trim().is_empty() {
@@ -875,7 +894,7 @@ fn dotnet_run_start(
                 }
             }
         } else {
-            return Err("Chưa cấu hình đường dẫn BAT file cho hành động Test".to_string());
+            return Err("BAT file path not configured for Test action".to_string());
         }
     } else {
         // Run EXE without args ("khôgn cần truyền thanh số")
@@ -936,7 +955,7 @@ fn sync_asset(request: SyncAssetRequest) -> Result<CommandResult, String> {
     if !dest_canon.starts_with(&root_canon) {
         return Err("Dest nằm ngoài project root".to_string());
     }
-    let mut cmd = Command::new("robocopy");
+    let mut cmd = new_command("robocopy");
     cmd.arg(source).arg(dest_canon);
     if let Some(include) = request.include {
         if !include.trim().is_empty() {
