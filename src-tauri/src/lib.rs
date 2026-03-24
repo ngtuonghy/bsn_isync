@@ -741,6 +741,7 @@ fn dotnet_run_start(
             let build_out = run_capture(build)?;
             
             if build_out.code != 0 {
+                let _ = app.emit("build-status", "error");
                 let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
                 return Err(format!("Build failed, exit code {}", build_out.code));
             }
@@ -770,6 +771,7 @@ fn dotnet_run_start(
                 }
             }
             if build_out.code != 0 {
+                let _ = app.emit("build-status", "error");
                 let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
                 return Err(format!("Build failed, exit code {}", build_out.code));
             }
@@ -792,6 +794,7 @@ fn dotnet_run_start(
                     }
                 }
                 if rba_out.code != 0 {
+                    let _ = app.emit("build-status", "error");
                     let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction failed (code {})", rba_out.code));
                     return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
                 }

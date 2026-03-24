@@ -1607,6 +1607,11 @@ onMounted(async () => {
       setTimeout(() => {
         if (runner.buildStatus === "done") runner.buildStatus = null;
       }, 1500);
+    } else if (event.payload === "error") {
+      // Clear error status immediately or after a short delay
+      setTimeout(() => {
+        if (runner.buildStatus === "error") runner.buildStatus = null;
+      }, 500);
     }
   });
 
