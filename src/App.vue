@@ -3,7 +3,7 @@ declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
-import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X } from "lucide-vue-next";
+import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
@@ -161,6 +161,15 @@ type ProjectProfile = {
   backlogIssueKey?: string;
   backlogIssueSummary?: string;
 };
+
+type EnvCheck = {
+  name: string;
+  found: boolean;
+  version: string;
+  downloadUrl: string;
+};
+
+const envStatus = ref<EnvCheck[]>([]);
 
 const discoveredProjects = ref<Array<{
   name: string;
@@ -1495,6 +1504,21 @@ async function runSqlOnly() {
   }
 }
 
+async function checkEnv() {
+  try {
+    envStatus.value = await invoke<EnvCheck[]>("check_environment");
+    const missing = envStatus.value.filter(x => !x.found);
+    if (missing.length > 0) {
+      toast.warning("Some required tools are missing", {
+        description: `Missing: ${missing.map(x => x.name).join(", ")}. Please install them to use all features.`,
+        duration: 10000,
+      });
+    }
+  } catch (e) {
+    console.error("Failed to check environment:", e);
+  }
+}
+
 async function initPty(id: 'main' | 'run', container: HTMLElement) {
   if (termState[id].term) return;
 
@@ -1553,6 +1577,7 @@ onMounted(async () => {
   loadSetupsForCurrentRoot();
   await handleBacklogOAuthCallback();
   void checkForUpdates();
+  void checkEnv();
 
   try {
     const startUrls = await getCurrent();
@@ -1704,6 +1729,53 @@ onUnmounted(() => {
             </template>
             <div class="h-4 w-px bg-border mx-1"></div>
           </template>
+
+          <!-- Environment Status -->
+          <div class="relative group/env mr-1">
+            <Button variant="ghost" size="icon" class="h-7 w-7 transition-all hover:bg-zinc-100 dark:hover:bg-white/5 rounded-lg"
+                    :class="envStatus.some(x => !x.found) ? 'text-amber-500' : 'text-green-500'">
+              <ShieldCheck v-if="envStatus.every(x => x.found)" class="size-4" />
+              <ShieldAlert v-else class="size-4" />
+            </Button>
+            
+            <div class="absolute right-0 top-full mt-2 w-72 bg-card/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.3)] opacity-0 invisible group-hover/env:opacity-100 group-hover/env:visible transition-all z-50 p-4 scale-95 group-hover/env:scale-100 origin-top-right ring-1 ring-white/10">
+              <div class="flex items-center justify-between mb-4">
+                <div class="flex flex-col gap-0.5">
+                  <span class="text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em]">Environment</span>
+                  <span class="text-[8px] text-muted-foreground/50 font-bold uppercase tracking-widest">System Requirements</span>
+                </div>
+                <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all" @click="checkEnv" title="Re-check environment">
+                  <RefreshCw class="size-3" />
+                </Button>
+              </div>
+              
+              <div class="space-y-2">
+                <div v-for="tool in envStatus" :key="tool.name" 
+                     class="flex items-center justify-between p-2.5 rounded-xl border border-white/5 transition-all"
+                     :class="tool.found ? 'bg-green-500/5 border-green-500/10' : 'bg-amber-500/5 border-amber-500/10'">
+                  <div class="flex items-center gap-3">
+                    <div class="size-2 rounded-full" :class="tool.found ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]' : 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.4)]'"></div>
+                    <div class="flex flex-col">
+                      <span class="text-[11px] font-black text-foreground/90 uppercase tracking-tight">{{ tool.name }}</span>
+                      <span class="text-[9px] text-muted-foreground font-bold tracking-tight opacity-70">{{ tool.found ? tool.version : 'Not found in PATH' }}</span>
+                    </div>
+                  </div>
+                  <Button v-if="!tool.found" 
+                          variant="secondary" 
+                          size="sm" 
+                          class="h-7 px-3 text-[9px] font-black uppercase tracking-widest bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg shadow-primary/20 rounded-lg shrink-0" 
+                          @click="openUrl(tool.downloadUrl)">
+                    Install
+                  </Button>
+                  <div v-else class="px-2 py-0.5 rounded-md bg-green-500/10 text-green-500 text-[8px] font-black uppercase tracking-tighter">OK</div>
+                </div>
+              </div>
+              
+              <div v-if="envStatus.some(x => !x.found)" class="mt-4 p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/10">
+                <p class="text-[9px] text-amber-500/80 font-bold leading-relaxed text-center italic opacity-80">Some features might be unavailable until tools are installed.</p>
+              </div>
+            </div>
+          </div>
 
           <template v-if="!updateVersion">
             <Button @click="() => checkForUpdates(true)" variant="ghost" size="icon" class="h-7 w-7 transition-all hover:bg-accent group" title="Check for updates">

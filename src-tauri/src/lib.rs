@@ -129,6 +129,15 @@ struct DotnetOnceRequest {
     config_template: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolCheck {
+    name: String,
+    found: bool,
+    version: String,
+    download_url: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SyncAssetRequest {
@@ -1022,6 +1031,53 @@ fn prepare_sql_temp_file(content: String) -> Result<String, String> {
     Ok(tp.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn check_environment() -> Vec<ToolCheck> {
+    let mut results = Vec::new();
+
+    // Check .NET SDK
+    let mut dotnet = ToolCheck {
+        name: ".NET SDK".to_string(),
+        found: false,
+        version: "".to_string(),
+        download_url: "https://dotnet.microsoft.com/en-us/download/dotnet/6.0".to_string(),
+    };
+    let mut cmd_dotnet = new_command("dotnet");
+    cmd_dotnet.arg("--version");
+    #[cfg(windows)]
+    cmd_dotnet.creation_flags(CREATE_NO_WINDOW);
+    if let Ok(out) = cmd_dotnet.output() {
+        if out.status.success() {
+            dotnet.found = true;
+            dotnet.version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        }
+    }
+    results.push(dotnet);
+
+    // Check SQLCMD
+    let mut sqlcmd = ToolCheck {
+        name: "SQLCMD".to_string(),
+        found: false,
+        version: "".to_string(),
+        download_url: "https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility".to_string(),
+    };
+    let mut cmd_sqlcmd = new_command("sqlcmd");
+    cmd_sqlcmd.arg("-?");
+    #[cfg(windows)]
+    cmd_sqlcmd.creation_flags(CREATE_NO_WINDOW);
+    if let Ok(out) = cmd_sqlcmd.output() {
+        // sqlcmd -? might return non-zero but if it ran, it exists
+        if out.status.success() || !out.stdout.is_empty() {
+            sqlcmd.found = true;
+            // sqlcmd doesn't easily report version with -v (it's for variables), so just say Found
+            sqlcmd.version = "Found".to_string();
+        }
+    }
+    results.push(sqlcmd);
+
+    results
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     dotenvy::dotenv().ok();
@@ -1069,6 +1125,7 @@ pub fn run() {
             backlog_oauth_refresh,
             run_sql_only,
             prepare_sql_temp_file,
+            check_environment,
             updater::check_update,
             updater::download_and_install_update,
             updater::restart_app
