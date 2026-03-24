@@ -206,8 +206,8 @@ const backlog = reactive({
 });
 
 const backlogIssueUrl = computed(() => {
-  if (!backlog.host || !runner.runArgs) return undefined;
-  return `https://${backlog.host}/view/${runner.runArgs}`;
+  if (!backlog.host || !runner.backlogIssueKey) return undefined;
+  return `https://${backlog.host}/view/${runner.backlogIssueKey}`;
 });
 
 
@@ -693,7 +693,6 @@ const filteredBacklogIssues = computed(() => {
 function selectBacklogIssue(issue: BacklogIssue) {
   runner.backlogIssueKey = issue.issueKey;
   runner.backlogIssueSummary = issue.summary;
-  runner.runArgs = issue.issueKey;
   
   // Example: tính năng 1 - BSN_IMPRROT
   // When selecting an issue, we update the custom part to either be the summary (if default) 
@@ -712,7 +711,6 @@ function selectBacklogIssue(issue: BacklogIssue) {
 function unlinkBacklogIssue() {
   runner.backlogIssueKey = "";
   runner.backlogIssueSummary = "";
-  runner.runArgs = "";
 }
 
 
@@ -837,10 +835,7 @@ const runner = reactive({
   shortcut: "Alt+Shift+T",
 });
 
-// Sync runArgs globally as it's independent of profiles
-watch(() => runner.runArgs, (val) => {
-  window.localStorage.setItem("bsn_isync:global:runArgs", val);
-});
+// RunArgs are now per-profile, no global sync needed
 
 // Sync shortcut globally as it's independent of profiles
 watch(() => runner.shortcut, (val) => {
@@ -952,7 +947,7 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     urls: runner.urls,
     aliasExeName: runner.aliasExeName,
     batFilePath: runner.batFilePath,
-    // runArgs is now independent and global
+    runArgs: runner.runArgs,
     sqlSetupPath: runner.sqlSetupPath,
     sqlServer: runner.sqlServer,
     sqlDatabase: runner.sqlDatabase,
@@ -984,7 +979,7 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.urls = setup.urls || "";
   runner.aliasExeName = setup.aliasExeName || "";
   runner.batFilePath = setup.batFilePath || "";
-  // runner.runArgs is independent and not updated from profiles
+  runner.runArgs = setup.runArgs || "";
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
   runner.sqlServer = setup.sqlServer || "";
@@ -1732,10 +1727,7 @@ onMounted(async () => {
   void checkForUpdates();
   void checkEnv();
 
-  const savedRunArgs = window.localStorage.getItem("bsn_isync:global:runArgs");
-  if (savedRunArgs !== null) {
-      runner.runArgs = savedRunArgs;
-  }
+  // runArgs are now loaded per-profile via loadSetupsForCurrentRoot()
 
   const savedShortcut = window.localStorage.getItem("bsn_isync:global:shortcut");
   if (savedShortcut !== null) {
@@ -2282,14 +2274,14 @@ onUnmounted(() => {
                           <div class="space-y-1.5">
                             <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">Arguments</Label>
                             <div class="relative flex items-center group/args">
-                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-14" :disabled="backlog.status !== 'success'" />
+                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-14 selection:bg-primary/30 selection:text-primary" :disabled="backlog.status !== 'success'" />
                               <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
                                 <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="backlog.status !== 'success'">
                                   <Clock class="size-3" />
                                 </Button>
                               </div>
                             </div>
-                            <p class="text-[8px] text-muted-foreground/40 italic px-1">Global setting, shared across all profiles.</p>
+                
                           </div>
                         </div>
                       </div>
@@ -2318,6 +2310,7 @@ onUnmounted(() => {
                     <TabsContent value="sql" class="mt-0 space-y-3">
                       <div class="grid grid-cols-2 gap-3">
                         <div class="space-y-1">
+                           <Label class="text-[10px] uppercase font-bold text-muted-foreground">Server</Label>
                           <Input v-model="runner.sqlServer" placeholder="localhost\SQLEXPRESS" class="h-8 text-xs" :disabled="!canEditSelected" />
                         </div>
                         <div class="space-y-1">
