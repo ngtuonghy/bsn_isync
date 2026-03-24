@@ -10,6 +10,10 @@
     "opener:default",
     "updater:default",
     "deep-link:default",
+    "global-shortcut:allow-is-registered",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "notification:default",
     "window-state:default"
   ]
 }

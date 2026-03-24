@@ -3,12 +3,15 @@ declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
-import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert } from "lucide-vue-next";
+import { onClickOutside } from "@vueuse/core";
+import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
+import { register as registerShortcut, unregister as unregisterShortcut, isRegistered } from "@tauri-apps/plugin-global-shortcut";
 import { listen } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -147,7 +150,7 @@ type ProjectProfile = {
   urls: string;
   aliasExeName: string;
   batFilePath: string;
-  runArgs: string;
+  runArgs?: string;
   sqlSetupPath: string;
   sqlServer?: string;
   sqlDatabase?: string;
@@ -160,6 +163,7 @@ type ProjectProfile = {
   backlogIssueTypeId?: number;
   backlogIssueKey?: string;
   backlogIssueSummary?: string;
+  shortcut?: string;
 };
 
 type EnvCheck = {
@@ -244,6 +248,11 @@ async function checkForUpdates(manual = false) {
     }
   }
 }
+
+const isNotificationEnabled = ref(localStorage.getItem("bsn_isync_notifications") !== "false");
+watch(isNotificationEnabled, (val) => {
+  localStorage.setItem("bsn_isync_notifications", String(val));
+});
 
 async function downloadUpdate() {
   if (isUpdateDownloading.value) return;
@@ -762,7 +771,11 @@ const scopedProfiles = computed(() => {
 
 // isOwnerView / hasVisibleProfiles removed
 const selectedProfile = computed(() => setupProfiles.value.find((p) => p.id === selectedSetupId.value));
-const canEditSelected = computed(() => selectedProfile.value?.owner === currentUser.value);
+const canEditSelected = computed(() => {
+  if (backlog.status !== 'success') return false;
+  if (!selectedProfile.value) return false;
+  return !selectedProfile.value.owner || selectedProfile.value.owner === currentUser.value;
+});
 // selectedProject removed
 // selectedProjectLabel removed
 const profileNameInput = ref<HTMLInputElement | null>(null);
@@ -821,6 +834,17 @@ const runner = reactive({
   backlogIssueTypeId: undefined as number | undefined,
   backlogIssueKey: "",
   backlogIssueSummary: "",
+  shortcut: "Alt+Shift+T",
+});
+
+// Sync runArgs globally as it's independent of profiles
+watch(() => runner.runArgs, (val) => {
+  window.localStorage.setItem("bsn_isync:global:runArgs", val);
+});
+
+// Sync shortcut globally as it's independent of profiles
+watch(() => runner.shortcut, (val) => {
+  window.localStorage.setItem("bsn_isync:global:shortcut", val);
 });
 
 // --- Autosave logic ---
@@ -928,7 +952,7 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     urls: runner.urls,
     aliasExeName: runner.aliasExeName,
     batFilePath: runner.batFilePath,
-    runArgs: runner.runArgs,
+    // runArgs is now independent and global
     sqlSetupPath: runner.sqlSetupPath,
     sqlServer: runner.sqlServer,
     sqlDatabase: runner.sqlDatabase,
@@ -940,6 +964,7 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     backlogIssueTypeId: runner.backlogIssueTypeId,
     backlogIssueKey: runner.backlogIssueKey,
     backlogIssueSummary: runner.backlogIssueSummary,
+    // shortcut is now independent and global
     sync: (() => {
       const { logs, ...syncData } = sync;
       return JSON.parse(JSON.stringify(syncData));
@@ -959,7 +984,7 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.urls = setup.urls || "";
   runner.aliasExeName = setup.aliasExeName || "";
   runner.batFilePath = setup.batFilePath || "";
-  runner.runArgs = setup.runArgs || "";
+  // runner.runArgs is independent and not updated from profiles
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
   runner.sqlServer = setup.sqlServer || "";
@@ -972,6 +997,8 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.backlogIssueTypeId = setup.backlogIssueTypeId;
   runner.backlogIssueKey = setup.backlogIssueKey || "";
   runner.backlogIssueSummary = setup.backlogIssueSummary || "";
+  // runner.shortcut is independent and not updated from profiles
+  
   if (setup.sync) {
     Object.assign(sync, setup.sync);
   }
@@ -1176,6 +1203,14 @@ function commitProfileName() {
 
 function createNewSetupProfile() {
   if (runner.running) {
+    return;
+  }
+  
+  if (backlog.status !== 'success') {
+    toast.error("Backlog Login Required", {
+      description: "You need to log in to Backlog to use this feature.",
+      duration: 5000,
+    });
     return;
   }
   
@@ -1519,6 +1554,124 @@ async function checkEnv() {
   }
 }
 
+const isRecordingShortcut = ref(false);
+const shortcutContainerRef = ref<HTMLElement | null>(null);
+
+onClickOutside(shortcutContainerRef, () => {
+  if (isRecordingShortcut.value) {
+    stopRecordingShortcut();
+  }
+});
+
+function formatTauriShortcut(e: KeyboardEvent): string {
+  const modifiers = [];
+  if (e.ctrlKey || e.metaKey) modifiers.push('CommandOrControl');
+  if (e.altKey) modifiers.push('Alt');
+  if (e.shiftKey) modifiers.push('Shift');
+
+  let key = e.key.toUpperCase();
+  if (key === ' ') key = 'Space';
+  else if (key === 'ESCAPE') key = 'Esc';
+  else if (key === 'ARROWUP') key = 'Up';
+  else if (key === 'ARROWDOWN') key = 'Down';
+  else if (key === 'ARROWLEFT') key = 'Left';
+  else if (key === 'ARROWRIGHT') key = 'Right';
+  
+  if (e.code.startsWith('Key')) {
+    key = e.code.replace('Key', '');
+  } else if (e.code.startsWith('Digit')) {
+    key = e.code.replace('Digit', '');
+  } else if (e.code.startsWith('F') && e.code.length > 1) {
+    key = e.code;
+  }
+
+  if (modifiers.length === 0) return key;
+  return [...modifiers, key].join('+');
+}
+
+async function startRecordingShortcut() {
+  if (isRecordingShortcut.value) return;
+  isRecordingShortcut.value = true;
+  window.addEventListener("keydown", handleShortcutKeydown, true);
+  toast.info("Recording shortcut... Press keys to record.", { duration: 3000 });
+}
+
+function stopRecordingShortcut() {
+  isRecordingShortcut.value = false;
+  window.removeEventListener("keydown", handleShortcutKeydown, true);
+}
+
+async function handleShortcutKeydown(e: KeyboardEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+
+  const shortcut = formatTauriShortcut(e);
+  if (shortcut) {
+    const oldShortcut = runner.shortcut;
+    runner.shortcut = shortcut;
+    stopRecordingShortcut();
+    
+    await updateGlobalShortcut(shortcut, oldShortcut);
+    toast.success(`Shortcut set to: ${shortcut}`);
+  }
+}
+
+async function updateGlobalShortcut(newShortcut: string, oldShortcut?: string) {
+  try {
+    if (oldShortcut && await isRegistered(oldShortcut)) {
+      await unregisterShortcut(oldShortcut);
+    }
+    if (newShortcut) {
+      await registerShortcut(newShortcut, (event: any) => {
+        if (event.state === 'Pressed') {
+          console.log(`Shortcut ${newShortcut} triggered`);
+          notify('BSN iSync', `Test started via shortcut (${newShortcut})`);
+          dotnet('run', 'bat');
+        }
+      });
+    }
+  } catch (e) {
+    console.error("Failed to update global shortcut:", e);
+    // Silent error or toast if needed
+  }
+}
+
+async function notify(title: string, body: string) {
+  if (!isNotificationEnabled.value) return;
+  try {
+    let permission = await isPermissionGranted();
+    if (!permission) {
+      const permissionResponse = await requestPermission();
+      permission = permissionResponse === 'granted';
+    }
+    if (permission) {
+      sendNotification({ title, body });
+    }
+  } catch (e) {
+    console.error("Failed to send notification:", e);
+  }
+}
+
+function clearShortcut() {
+  const old = runner.shortcut;
+  runner.shortcut = "";
+  if (old) {
+    unregisterShortcut(old).catch(() => {});
+  }
+  toast.success("Shortcut cleared");
+}
+
+function resetShortcutToDefault() {
+  const defaultShortcut = "Alt+Shift+T";
+  if (runner.shortcut === defaultShortcut) return;
+  const old = runner.shortcut;
+  runner.shortcut = defaultShortcut;
+  void updateGlobalShortcut(defaultShortcut, old);
+  toast.success(`Shortcut reset to: ${defaultShortcut}`);
+}
+
 async function initPty(id: 'main' | 'run', container: HTMLElement) {
   if (termState[id].term) return;
 
@@ -1579,6 +1732,20 @@ onMounted(async () => {
   void checkForUpdates();
   void checkEnv();
 
+  const savedRunArgs = window.localStorage.getItem("bsn_isync:global:runArgs");
+  if (savedRunArgs !== null) {
+      runner.runArgs = savedRunArgs;
+  }
+
+  const savedShortcut = window.localStorage.getItem("bsn_isync:global:shortcut");
+  if (savedShortcut !== null) {
+      runner.shortcut = savedShortcut;
+      void updateGlobalShortcut(savedShortcut);
+  }
+  
+  // Request notification permission early
+  requestPermission().catch(() => {});
+
   try {
     const startUrls = await getCurrent();
     if (startUrls?.length) {
@@ -1629,11 +1796,12 @@ onMounted(async () => {
   unlistenBuildStatus = await listen<string>("build-status", (event) => {
     runner.buildStatus = event.payload;
     if (event.payload === "done") {
+      notify('BSN iSync', '✅ Success: Build/Test completed');
       setTimeout(() => {
         if (runner.buildStatus === "done") runner.buildStatus = null;
       }, 1500);
     } else if (event.payload === "error") {
-      // Clear error status immediately or after a short delay
+      notify('BSN iSync', 'Build/Test failed');
       setTimeout(() => {
         if (runner.buildStatus === "error") runner.buildStatus = null;
       }, 500);
@@ -1783,9 +1951,19 @@ onUnmounted(() => {
             </Button>
           </template>
 
-          <Button @click="toggleTheme" variant="ghost" size="icon" class="h-7 w-7 transition-all hover:bg-accent">
+          <Button @click="toggleTheme" variant="ghost" size="icon" class="h-7 w-7 transition-all hover:bg-accent ring-primary/20">
             <Moon v-if="!dark" class="size-4" />
             <Sun v-else class="size-4 text-yellow-500" />
+          </Button>
+          
+          <Button @click="isNotificationEnabled = !isNotificationEnabled" 
+                  variant="ghost" 
+                  size="icon" 
+                  class="h-7 w-7 transition-all hover:bg-zinc-100 dark:hover:bg-white/5 rounded-lg group/bell relative" 
+                  :title="isNotificationEnabled ? 'Notifications Enabled' : 'Notifications Disabled'">
+            <Bell v-if="isNotificationEnabled" class="size-4 text-primary animate-in zoom-in-50 duration-300" />
+            <BellOff v-else class="size-4 text-muted-foreground opacity-50 animate-in zoom-in-50 duration-300" />
+            <div v-if="isNotificationEnabled" class="absolute top-1 right-1 size-1.5 bg-primary rounded-full ring-2 ring-background animate-pulse"></div>
           </Button>
         </div>
       </div>
@@ -1810,7 +1988,38 @@ onUnmounted(() => {
               </Button>
             </div>
           </div>
-        </div>
+
+            <!-- Enhanced Premium Global Shortcut UI -->
+            <div ref="shortcutContainerRef" class="flex items-center gap-3 bg-white dark:bg-zinc-900/80 rounded-2xl p-1.5 border border-zinc-200 dark:border-white/10 shadow-lg dark:shadow-2xl backdrop-blur-md group/shortcut-container ml-2 ring-1 ring-black/5 dark:ring-white/5">
+              <div class="flex items-center gap-1.5 px-2.5 py-1 bg-primary text-primary-foreground rounded-lg shadow-sm shrink-0 shadow-primary/20">
+                  <Beaker class="size-3" :class="isRecordingShortcut ? 'animate-pulse' : ''" />
+                  <span class="text-[9px] font-black uppercase tracking-widest">{{ isRecordingShortcut ? 'Recording' : 'Hotkey' }}</span>
+              </div>
+
+              <div class="flex items-center gap-1 min-w-[140px] justify-center">
+                <template v-if="runner.shortcut && !isRecordingShortcut">
+                   <div v-for="(part, i) in runner.shortcut.split('+')" :key="i" class="flex items-center gap-0.5">
+                      <span v-if="i > 0" class="text-[8px] font-black text-muted-foreground/30 px-0.5">+</span>
+                      <kbd class="px-2 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-white/10 text-[10px] font-mono font-black text-zinc-800 dark:text-zinc-200 shadow-[0_2px_0_var(--color-zinc-300)] dark:shadow-[0_2px_0_var(--color-zinc-950)] leading-none uppercase select-none transition-transform group-hover/hotkey:-translate-y-0.5">{{ part }}</kbd>
+                   </div>
+                </template>
+                <span v-else-if="isRecordingShortcut" class="text-[10px] font-black text-primary animate-pulse tracking-widest">PRESS KEYS...</span>
+                <span v-else class="text-[10px] font-bold text-muted-foreground/40 italic">None Set</span>
+              </div>
+
+              <div class="flex items-center gap-0.5 border-l border-white/10 pl-1">
+                <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all scale-90 hover:scale-100" title="Record New Shortcut" @click="startRecordingShortcut" :disabled="backlog.status !== 'success'">
+                  <Pencil class="size-3" />
+                </Button>
+                <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-amber-500/10 text-muted-foreground hover:text-amber-500 transition-all scale-90 hover:scale-100" title="Reset to Default (Alt+Shift+T)" @click="resetShortcutToDefault" :disabled="backlog.status !== 'success'">
+                  <RotateCcw class="size-3" />
+                </Button>
+                <Button v-if="runner.shortcut" variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all scale-90 hover:scale-100" title="Clear Shortcut" @click="clearShortcut" :disabled="backlog.status !== 'success'">
+                  <Trash2 class="size-3" />
+                </Button>
+              </div>
+            </div>
+          </div>
 
         <TabsContent value="runner" class="flex-1 min-h-0 m-0 border-0 p-0 outline-none">
           <section class="flex h-full gap-4 items-stretch overflow-hidden">
@@ -1825,11 +2034,10 @@ onUnmounted(() => {
                     variant="secondary" 
                     size="sm" 
                     class="h-8 px-3 font-bold relative group/create shrink-0" 
-                    :disabled="runner.running || backlog.status !== 'success'" 
+                    :disabled="runner.running" 
                     @click="createNewSetupProfile"
                   >
                     <Plus class="size-3.5 mr-1" /> Create
-                    <span v-if="backlog.status !== 'success'" class="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2 py-1 bg-black/95 text-[9px] text-white rounded-md shadow-xl opacity-0 group-hover/create:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Log in to create</span>
                   </Button>
                 </div>
                 
@@ -2023,8 +2231,8 @@ onUnmounted(() => {
                       <div class="space-y-6">
                         <div class="space-y-1.5">
                         <Label class="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Target Project</Label>
-                        <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject">
-                          <SelectTrigger class="w-full h-9 bg-muted/20 border-input">
+                        <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject" :disabled="!canEditSelected">
+                          <SelectTrigger class="w-full h-9 bg-muted/20 border-input" :disabled="!canEditSelected">
                             <div class="truncate max-w-full font-medium">
                               <SelectValue placeholder="Scan projects to select...">
                                 {{ discoveredProjects.find(p => p.root === selectedProjectRoot)?.name }}
@@ -2057,7 +2265,7 @@ onUnmounted(() => {
 
                         <div class="space-y-1.5">
                           <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">EXE Name</Label>
-                          <Input v-model="runner.aliasExeName" placeholder="App.exe" @blur="() => { if (runner.aliasExeName && !runner.aliasExeName.toLowerCase().endsWith('.exe')) { runner.aliasExeName += '.exe' } }" />
+                          <Input v-model="runner.aliasExeName" placeholder="App.exe" @blur="() => { if (runner.aliasExeName && !runner.aliasExeName.toLowerCase().endsWith('.exe')) { runner.aliasExeName += '.exe' } }" :disabled="!canEditSelected" />
                         </div>
 
                         <div class="space-y-3">
@@ -2065,22 +2273,23 @@ onUnmounted(() => {
                             <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">Test (BAT) File</Label>
                             <div class="flex gap-1.5 h-9">
                               <div class="flex-1 relative flex items-center">
-                                <Input v-model="runner.batFilePath" class="font-mono pr-8 h-full" />
+                                <Input v-model="runner.batFilePath" class="font-mono pr-8 h-full" :disabled="!canEditSelected" />
                                 <Beaker class="absolute right-2.5 size-3 opacity-30" />
                               </div>
-                              <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile"><FolderOpen class="size-4" /></Button>
+                              <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile" :disabled="!canEditSelected"><FolderOpen class="size-4" /></Button>
                             </div>
                           </div>
                           <div class="space-y-1.5">
                             <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">Arguments</Label>
                             <div class="relative flex items-center group/args">
-                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-14" />
+                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-14" :disabled="backlog.status !== 'success'" />
                               <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
-                                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder">
+                                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="backlog.status !== 'success'">
                                   <Clock class="size-3" />
                                 </Button>
                               </div>
                             </div>
+                            <p class="text-[8px] text-muted-foreground/40 italic px-1">Global setting, shared across all profiles.</p>
                           </div>
                         </div>
                       </div>
@@ -2109,17 +2318,16 @@ onUnmounted(() => {
                     <TabsContent value="sql" class="mt-0 space-y-3">
                       <div class="grid grid-cols-2 gap-3">
                         <div class="space-y-1">
-                          <Label class="text-[10px] uppercase font-bold text-muted-foreground">Server</Label>
-                          <Input v-model="runner.sqlServer" placeholder="localhost\SQLEXPRESS" class="h-8 text-xs" />
+                          <Input v-model="runner.sqlServer" placeholder="localhost\SQLEXPRESS" class="h-8 text-xs" :disabled="!canEditSelected" />
                         </div>
                         <div class="space-y-1">
                           <Label class="text-[10px] uppercase font-bold text-muted-foreground">Database</Label>
-                          <Input v-model="runner.sqlDatabase" placeholder="MyDatabase" class="h-8 text-xs" />
+                          <Input v-model="runner.sqlDatabase" placeholder="MyDatabase" class="h-8 text-xs" :disabled="!canEditSelected" />
                         </div>
                       </div>
 
                       <div class="flex items-center justify-end py-1">
-                        <Button variant="secondary" size="sm" class="h-8 text-[11px] font-bold px-4 transition-all hover:bg-primary hover:text-primary-foreground group" @click="runSqlOnly">
+                        <Button variant="secondary" size="sm" class="h-8 text-[11px] font-bold px-4 transition-all hover:bg-primary hover:text-primary-foreground group" @click="runSqlOnly" :disabled="!canEditSelected">
                           <Play class="size-3.5 mr-2 group-hover:animate-pulse" />
                           Run SQL
                         </Button>
@@ -2129,7 +2337,7 @@ onUnmounted(() => {
                         <div class="flex items-center justify-between">
                           <Label class="text-[10px] uppercase font-bold text-muted-foreground">SQL Script / Query</Label>
                         </div>
-                        <Textarea v-model="runner.sqlSetupPath" class="min-h-[200px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Paste SQL code here (Supports Japanese/Vietnamese)..." />
+                        <Textarea v-model="runner.sqlSetupPath" class="min-h-[200px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Paste SQL code here (Supports Japanese/Vietnamese)..." :disabled="!canEditSelected" />
                       </div>
                     </TabsContent>
                     <TabsContent value="config" class="mt-0 space-y-3">
@@ -2138,7 +2346,7 @@ onUnmounted(() => {
                           <Label class="text-[10px] uppercase font-bold text-muted-foreground">App.config Template</Label>
                           <span class="text-[9px] text-muted-foreground opacity-50 italic">Auto-syncs with EXE & BAT</span>
                         </div>
-                        <Textarea v-model="runner.configTemplate" class="min-h-[200px] max-h-[500px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="XML Config Template..." />
+                        <Textarea v-model="runner.configTemplate" class="min-h-[200px] max-h-[500px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="XML Config Template..." :disabled="!canEditSelected" />
                       </div>
                     </TabsContent>
                   </Tabs>
@@ -2219,7 +2427,7 @@ onUnmounted(() => {
                                      :class="[
                                        'size-4 transition-all duration-300',
                                        runner.loadingTarget === 'build' ? 'animate-spin' : '',
-                                       runner.buildStatus ? 'animate-hammer-hit animate-glow-vibrant text-[#FC6400]' : 'group-hover/btn:rotate-12 text-zinc-500'
+                                       runner.buildStatus ? 'animate-hammer-hit text-[#FC6400]' : 'group-hover/btn:rotate-12 text-zinc-500'
                                      ]" />
                         </div>
                         <!-- Spark Particle -->
