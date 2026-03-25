@@ -832,7 +832,7 @@ const runner = reactive({
   backlogIssueTypeId: undefined as number | undefined,
   backlogIssueKey: "",
   backlogIssueSummary: "",
-  shortcut: "Alt+Shift+T",
+  shortcut: "Alt+Shift+M",
 });
 
 // RunArgs are now per-profile, no global sync needed
@@ -1659,7 +1659,7 @@ function clearShortcut() {
 }
 
 function resetShortcutToDefault() {
-  const defaultShortcut = "Alt+Shift+T";
+  const defaultShortcut = "Alt+Shift+M";
   if (runner.shortcut === defaultShortcut) return;
   const old = runner.shortcut;
   runner.shortcut = defaultShortcut;
