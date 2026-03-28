@@ -1,0 +1,17 @@
+{
+  "name": "sync-worker",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260317.1",
+    "@types/bun": "latest",
+    "wrangler": "^4.78.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "hono": "^4.12.9"
+  }
+}

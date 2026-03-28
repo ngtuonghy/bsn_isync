@@ -4,7 +4,7 @@ const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { onClickOutside } from "@vueuse/core";
-import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff } from "lucide-vue-next";
+import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Share2 } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
@@ -44,6 +44,17 @@ import {
   type BacklogIssue,
   type BacklogOAuthToken,
 } from "@/lib/backlogAuth";
+import { useStore } from "@/composables/useStore";
+import { SyncService } from "@/lib/sync";
+import { 
+  Dialog, 
+  DialogContent, 
+  DialogHeader, 
+  DialogTitle, 
+  DialogDescription, 
+  DialogFooter,
+  DialogTrigger
+} from "@/components/ui/dialog";
 import "./index.css";
 import { Terminal } from 'xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -249,9 +260,35 @@ async function checkForUpdates(manual = false) {
   }
 }
 
-const isNotificationEnabled = ref(localStorage.getItem("bsn_isync_notifications") !== "false");
-watch(isNotificationEnabled, (val) => {
-  localStorage.setItem("bsn_isync_notifications", String(val));
+const isNotificationEnabled = ref(true); // Default to true, will be loaded from store
+
+const syncStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
+const CLOUDFLARE_WORKER_URL = "https://bsn-isync-sync-worker.ngtuonghy.workers.dev"; // Changed to a real-ish placeholder
+
+const { setItem, getItem } = useStore();
+const isShareDialogOpen = ref(false);
+const shareTargetUserId = ref('');
+const shareRole = ref<'editor' | 'viewer'>('editor');
+
+async function handleShare() {
+  if (!selectedSetupId.value || !shareTargetUserId.value || !syncService.value) return;
+  try {
+    const res = await syncService.value.shareProfile(selectedSetupId.value, shareTargetUserId.value, shareRole.value);
+    if (res.success) {
+      toast.success("Profile shared successfully");
+      isShareDialogOpen.value = false;
+      shareTargetUserId.value = '';
+    } else {
+      toast.error("Sharing failed", { description: res.error });
+    }
+  } catch (e) {
+    toast.error("Sharing failed", { description: String(e) });
+  }
+}
+
+const syncService = computed(() => {
+  if (!backlog.host || !backlog.token?.access_token) return null;
+  return new SyncService(CLOUDFLARE_WORKER_URL, backlog.host, backlog.token.access_token);
 });
 
 async function downloadUpdate() {
@@ -281,29 +318,16 @@ async function applyUpdate() {
   }
 }
 
-const UI_STATE_KEY = "bsn_isync:ui_state";
-function saveUIState() {
-  const state = {
-    activeTab: activeTab.value,
-    dark: dark.value,
-    selectedSetupId: selectedSetupId.value,
-    selectedOwner: selectedOwner.value,
-    profileScope: profileScope.value,
-    workspaceRoot: runner.workspaceRoot,
-    backlog: {
-      host: backlog.host,
-      token: backlog.token,
-      profile: backlog.profile,
-    }
-  };
-  window.localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
-}
-
-function loadUIState() {
-  const raw = window.localStorage.getItem(UI_STATE_KEY);
-  if (!raw) return;
+const UI_STATE_KEY = "ui_state";
+async function loadUIState() {
+  console.log("[Store] Loading UI State...");
   try {
-    const state = JSON.parse(raw);
+    const state = await getItem<any>(UI_STATE_KEY);
+    if (!state) {
+      console.log("[Store] No UI state found in store.");
+      return;
+    }
+    console.log("[Store] UI State loaded:", state);
     if (state.activeTab) activeTab.value = state.activeTab;
     if (state.dark !== undefined) {
       dark.value = state.dark;
@@ -315,11 +339,11 @@ function loadUIState() {
     if (state.selectedOwner) selectedOwner.value = state.selectedOwner;
     if (state.profileScope) profileScope.value = state.profileScope;
     if (state.workspaceRoot) runner.workspaceRoot = state.workspaceRoot;
+    if (state.isNotificationEnabled !== undefined) isNotificationEnabled.value = state.isNotificationEnabled;
     if (state.backlog) {
       if (state.backlog.host) backlog.host = state.backlog.host;
       if (state.backlog.token) {
         backlog.token = state.backlog.token;
-        // Legacy support: calculate expires_at if missing (assume just received if we don't know)
         if (backlog.token.access_token && !backlog.token.expires_at && backlog.token.expires_in) {
           backlog.token.expires_at = Date.now() + (backlog.token.expires_in * 1000);
         }
@@ -327,15 +351,61 @@ function loadUIState() {
       if (state.backlog.profile) {
         backlog.profile = state.backlog.profile;
         backlog.status = "success";
-        // If selectedOwner was not loaded or was a legacy default, sync it with current user
         if (!selectedOwner.value || selectedOwner.value === "Guest") {
            selectedOwner.value = currentUser.value;
         }
         loadBacklogIssues();
+      } else if (backlog.token?.access_token) {
+        // Token exists but no profile, try to reach out
+        backlog.status = "loading";
+        fetchBacklogProfileWithToken({
+          host: backlog.host,
+          accessToken: backlog.token.access_token,
+        }).then(res => {
+          if (res.status === "success") {
+            backlog.profile = res.profile;
+            backlog.status = "success";
+            if (!selectedOwner.value || selectedOwner.value === "Guest") {
+              selectedOwner.value = currentUser.value;
+            }
+            loadBacklogIssues();
+            saveUIState(); // update with profile info
+          } else {
+            backlog.status = "error";
+            backlog.error = res.error;
+          }
+        });
       }
     }
   } catch (e) {
-    console.error("Failed to load UI state", e);
+    console.error("[Store] Failed to load UI state", e);
+  }
+}
+
+/**
+ * Saves UI-specific settings (Theme, Tabs, Notification preferences, and Backlog tokens) 
+ * to the LOCAL store ONLY. This data is NEVER synced to the Cloudflare Worker.
+ */
+async function saveUIState() {
+  try {
+    const state = {
+      activeTab: activeTab.value,
+      dark: dark.value,
+      selectedSetupId: selectedSetupId.value,
+      selectedOwner: selectedOwner.value,
+      profileScope: profileScope.value,
+      workspaceRoot: runner.workspaceRoot,
+      isNotificationEnabled: isNotificationEnabled.value,
+      backlog: {
+        host: backlog.host,
+        token: backlog.token,
+        profile: backlog.profile,
+      }
+    };
+    await setItem(UI_STATE_KEY, state);
+    console.log("[Store] UI state changed (saving via autoSave).");
+  } catch (e) {
+    console.error("[Store] Failed to trigger save UI state", e);
   }
 }
 
@@ -731,9 +801,6 @@ const filteredDiscoveredProjects = computed(() => {
   );
 });
 
-async function handleBacklogOAuthCallback() {
-  await handleBacklogOAuthUrl(window.location.href);
-}
 
 // handleBacklogLogin removed (redundant)
 
@@ -1004,44 +1071,74 @@ function applySetupToRunner(setup: ProjectProfile) {
   }
 }
 
-function loadSetupsForCurrentRoot() {
-  const raw = window.localStorage.getItem(setupStorageKey());
-  if (!raw) {
+async function loadSetupsForCurrentRoot() {
+  const raw = await getItem<ProjectProfile[]>(setupStorageKey());
+  if (!raw || !Array.isArray(raw) || raw.length === 0) {
     const defaultSetup = buildSetupFromRunner("Default");
     setupProfiles.value = [defaultSetup];
     selectedOwner.value = defaultSetup.owner;
     selectedSetupId.value = defaultSetup.id;
-    saveSetupsForCurrentRoot();
+    await saveSetupsForCurrentRoot();
     return;
   }
   try {
-    const parsed = JSON.parse(raw) as ProjectProfile[];
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      const defaultSetup = buildSetupFromRunner("Default");
-      setupProfiles.value = [defaultSetup];
-      selectedOwner.value = defaultSetup.owner;
-      selectedSetupId.value = defaultSetup.id;
-      saveSetupsForCurrentRoot();
-      return;
-    }
-    const normalized = parsed.map((setup) => ({
+    const normalized = raw.map((setup) => ({
       ...setup,
       owner: (setup as any).owner || currentUser.value,
     }));
     setupProfiles.value = normalized;
     ensureVisibleSelection();
     if (selectedSetupId.value) applySelectedSetupProfile();
-  } catch {
-    const defaultSetup = buildSetupFromRunner("Default");
-    setupProfiles.value = [defaultSetup];
-    selectedOwner.value = defaultSetup.owner;
-    selectedSetupId.value = defaultSetup.id;
-    saveSetupsForCurrentRoot();
+  } catch (e) {
+    console.error("Failed to load profiles", e);
   }
 }
 
-function saveSetupsForCurrentRoot() {
-  window.localStorage.setItem(setupStorageKey(), JSON.stringify(setupProfiles.value));
+async function saveSetupsForCurrentRoot() {
+  await setItem(setupStorageKey(), setupProfiles.value);
+  // Trigger Cloudflare Sync
+  triggerSync();
+}
+
+let syncTimer: number | undefined;
+function triggerSync() {
+  if (syncTimer) clearTimeout(syncTimer);
+  syncStatus.value = 'saving';
+  syncTimer = window.setTimeout(async () => {
+    await syncProfilesWithCloudflare();
+  }, 2000); // 2 second debounce for auto-save
+}
+
+/**
+ * Synchronizes Project Profiles to Cloudflare D1.
+ * Only the project configurations (roots, paths, runner args) are synced.
+ * UI preferences and Backlog tokens are excluded from this process.
+ */
+async function syncProfilesWithCloudflare() {
+  if (!syncService.value) {
+    syncStatus.value = 'idle';
+    return;
+  }
+
+  try {
+    // Only sync profiles owned/edited by current user that changed
+    // For simplicity in this version, we sync all setupProfiles
+    for (const profile of setupProfiles.value) {
+      if (profile.owner === currentUser.value) {
+        await syncService.value.upsertProfile({
+          id: profile.id,
+          name: profile.name,
+          content: profile
+        });
+      }
+    }
+    syncStatus.value = 'saved';
+    setTimeout(() => { if (syncStatus.value === 'saved') syncStatus.value = 'idle'; }, 3000);
+  } catch (e) {
+    console.error("Sync failed", e);
+    syncStatus.value = 'error';
+    toast.error("Sync failed", { description: String(e) });
+  }
 }
 
 function ensureVisibleSelection() {
@@ -1225,7 +1322,7 @@ function createNewSetupProfile() {
   startEditingProfileName();
 }
 
-function deleteSelectedSetupProfile() {
+async function deleteSelectedSetupProfile() {
   if (runner.running) {
     return;
   }
@@ -1239,10 +1336,21 @@ function deleteSelectedSetupProfile() {
   }
   const idx = setupProfiles.value.findIndex((x) => x.id === selectedSetupId.value);
   if (idx < 0) return;
+  
+  const profileToDelete = setupProfiles.value[idx];
   setupProfiles.value.splice(idx, 1);
   selectedSetupId.value = setupProfiles.value[0]?.id ?? "";
   applySelectedSetupProfile();
-  saveSetupsForCurrentRoot();
+  await saveSetupsForCurrentRoot();
+  
+  // Also delete from Cloudflare if synced
+  if (syncService.value && profileToDelete.owner === currentUser.value) {
+    try {
+      await syncService.value.deleteProfile(profileToDelete.id);
+    } catch (e) {
+      console.error("Failed to delete profile from server", e);
+    }
+  }
 }
 
 const sync = reactive({
@@ -1714,30 +1822,19 @@ async function initPty(id: 'main' | 'run', container: HTMLElement) {
 }
 
 onMounted(async () => {
-  // Sync Backlog config from backend
-  try {
-    const config = await invoke("get_backlog_config") as { host: string };
-    if (config.host) backlog.host = config.host;
-  } catch (e) {
-    console.error("Failed to load Backlog config:", e);
-  }
-  loadUIState();
-  loadSetupsForCurrentRoot();
-  await handleBacklogOAuthCallback();
-  void checkForUpdates();
-  void checkEnv();
+  // 1. Initialize environment status
+  await checkEnv();
 
-  // runArgs are now loaded per-profile via loadSetupsForCurrentRoot()
+  // 2. Load UI state and Backlog login status from store
+  await loadUIState();
 
-  const savedShortcut = window.localStorage.getItem("bsn_isync:global:shortcut");
-  if (savedShortcut !== null) {
-      runner.shortcut = savedShortcut;
-      void updateGlobalShortcut(savedShortcut);
-  }
+  // 3. Load Project Profiles
+  await loadSetupsForCurrentRoot();
   
-  // Request notification permission early
-  requestPermission().catch(() => {});
+  // 4. Check for updates
+  void checkForUpdates(false);
 
+  // 5. Handle potential OAuth Redirect
   try {
     const startUrls = await getCurrent();
     if (startUrls?.length) {
@@ -1752,11 +1849,25 @@ onMounted(async () => {
     });
   } catch {}
 
+  // 6. Existing setup...
   try {
     await discoverProjects(false);
   } catch (e: any) {}
 
   await loadBacklogProjects();
+  
+  if (backlog.status === 'idle' && backlog.token?.access_token) {
+     void fetchBacklogProfileWithToken({
+       host: backlog.host,
+       accessToken: backlog.token.access_token,
+     }).then(res => {
+       if (res.status === "success") {
+         backlog.profile = res.profile;
+         backlog.status = "success";
+         saveUIState();
+       }
+     });
+  }
 
   // Load last selected project from global storage if not set by profile
   const lastProject = window.localStorage.getItem("backlog_last_project");
@@ -1937,6 +2048,7 @@ onUnmounted(() => {
             </div>
           </div>
 
+
           <template v-if="!updateVersion">
             <Button @click="() => checkForUpdates(true)" variant="ghost" size="icon" class="h-7 w-7 transition-all hover:bg-accent group" title="Check for updates">
               <RefreshCw class="size-3.5 group-hover:rotate-180 transition-transform duration-500" />
@@ -1957,6 +2069,8 @@ onUnmounted(() => {
             <BellOff v-else class="size-4 text-muted-foreground opacity-50 animate-in zoom-in-50 duration-300" />
             <div v-if="isNotificationEnabled" class="absolute top-1 right-1 size-1.5 bg-primary rounded-full ring-2 ring-background animate-pulse"></div>
           </Button>
+
+          <div class="h-4 w-px bg-border mx-1"></div>
         </div>
       </div>
     </header>
@@ -2021,6 +2135,15 @@ onUnmounted(() => {
                   <div class="flex items-center gap-3">
                     <div class="text-[13px] font-bold tracking-tight">Project Profile</div>
                     <div v-if="selectedProfile && selectedProfile.owner" class="text-[9px] px-2 py-0.5 rounded-full bg-muted font-medium uppercase tracking-tighter">{{ selectedProfile.owner }}</div>
+                    
+                    <!-- Professional Profile Sync Status -->
+                    <div v-if="selectedProfile && selectedProfile.owner === currentUser" 
+                         class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-tighter transition-all"
+                         :class="syncStatus === 'saving' ? 'bg-amber-500/10 text-amber-500' : syncStatus === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-500'">
+                      <RefreshCw v-if="syncStatus === 'saving'" class="size-2.5 animate-spin" />
+                      <Cloud v-else class="size-2.5" />
+                      <span>{{ syncStatus === 'saving' ? 'Cloud Syncing...' : syncStatus === 'error' ? 'Sync Error' : 'Cloud Protected' }}</span>
+                    </div>
                   </div>
                   <Button 
                     variant="secondary" 
@@ -2110,7 +2233,16 @@ onUnmounted(() => {
                                 @click="selectedSetupId = setup.id">
                             <div class="flex items-center justify-between w-full mb-1">
                               <div class="text-[13px] font-bold leading-tight text-foreground/90 group-hover/item:text-primary transition-colors break-words">{{ setup.name }}</div>
-                              <component :is="setup.owner === currentUser ? Pencil : Save" class="size-3 opacity-0 group-hover/item:opacity-40 transition-opacity" />
+                              <div class="flex items-center gap-1.5 opacity-40 group-hover/item:opacity-100 transition-opacity">
+                                <!-- Cloud Icon for owned profiles -->
+                                <Cloud v-if="setup.owner === currentUser" 
+                                       class="size-3 transition-colors"
+                                       :class="[
+                                         setup.id === selectedSetupId && syncStatus === 'saving' ? 'text-amber-500 animate-pulse' : 
+                                         setup.id === selectedSetupId && syncStatus === 'error' ? 'text-destructive' : 'text-muted-foreground'
+                                       ]" />
+                                <component :is="setup.owner === currentUser ? Pencil : Save" class="size-3" />
+                              </div>
                             </div>
                             <div class="flex items-center gap-1.5 overflow-hidden">
                               <div class="h-1.5 w-1.5 rounded-full bg-primary/40 group-hover/item:bg-primary transition-colors shrink-0"></div>
@@ -2195,6 +2327,7 @@ onUnmounted(() => {
                               <div class="flex items-center gap-2">
                                 <span class="text-[16px] font-black tracking-tight leading-tight group-hover/header:text-primary transition-colors break-words">{{ selectedProfile?.name || 'No Profile Selected' }}</span>
                                 <Pencil v-if="canEditSelected" class="size-3.5 opacity-0 group-hover/header:opacity-40 transition-opacity shrink-0 translate-y-0.5" />
+                                <RefreshCw v-if="syncStatus === 'saving'" class="size-3.5 text-primary animate-spin ml-2" />
                               </div>
                               <div v-if="runner.backlogIssueKey" class="flex items-center gap-2 pl-4.5 mt-0.5">
                                 <div class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-muted text-muted-foreground/80 tracking-tighter">{{ runner.backlogIssueKey }}</div>
@@ -2207,6 +2340,51 @@ onUnmounted(() => {
                           </div>
                         </div>
                         <div class="flex items-center gap-1 ml-auto">
+                          <Dialog v-model:open="isShareDialogOpen">
+                            <DialogTrigger as-child>
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                class="h-8 w-8 rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all"
+                                title="Share Profile"
+                                :disabled="runner.running || !canEditSelected || !syncService"
+                                @click="isShareDialogOpen = true"
+                              >
+                                <Share2 class="size-4" />
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent class="sm:max-w-[425px] bg-background/95 backdrop-blur-2xl border-primary/10 rounded-3xl shadow-2xl">
+                              <DialogHeader>
+                                <DialogTitle class="text-[17px] font-black tracking-tight">Chia sẻ Profile</DialogTitle>
+                                <DialogDescription class="text-[12px] opacity-60">
+                                  Cấp quyền cho người dùng khác truy cập hoặc chỉnh sửa cấu hình này.
+                                </DialogDescription>
+                              </DialogHeader>
+                              <div class="grid gap-6 py-4">
+                                <div class="space-y-2">
+                                  <Label class="text-[10px] font-black uppercase tracking-widest opacity-60">ID Người dùng (Backlog ID)</Label>
+                                  <Input v-model="shareTargetUserId" placeholder="Nhập User ID người nhận..." class="h-10 rounded-xl bg-muted/20 border-primary/10 focus:ring-primary/20" />
+                                </div>
+                                <div class="space-y-2">
+                                  <Label class="text-[10px] font-black uppercase tracking-widest opacity-60">Quyền truy cập</Label>
+                                  <Select v-model="shareRole">
+                                    <SelectTrigger class="h-10 rounded-xl bg-muted/20 border-primary/10">
+                                      <SelectValue placeholder="Chọn quyền" />
+                                    </SelectTrigger>
+                                    <SelectContent class="rounded-xl border-primary/10">
+                                      <SelectItem value="editor" class="text-xs font-bold py-2.5">Chỉnh sửa (Editor)</SelectItem>
+                                      <SelectItem value="viewer" class="text-xs font-bold py-2.5">Chỉ xem (Viewer)</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              </div>
+                              <DialogFooter class="sm:justify-end gap-2">
+                                <Button variant="ghost" class="h-10 rounded-xl px-6 font-bold uppercase tracking-widest text-[10px]" @click="isShareDialogOpen = false">Hủy</Button>
+                                <Button class="h-10 rounded-xl px-8 font-black uppercase tracking-widest text-[10px] shadow-lg shadow-primary/20" :disabled="!shareTargetUserId" @click="handleShare">Chia sẻ ngay</Button>
+                              </DialogFooter>
+                            </DialogContent>
+                          </Dialog>
+
                           <Button 
                             variant="ghost" 
                             size="icon" 

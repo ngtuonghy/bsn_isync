@@ -1,0 +1,12 @@
+{
+  "name": "bsn-isync-sync-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-03-28",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-app-demo",
+      "database_id": "f33a8ca9-7b83-417b-b997-9ee187053038"
+    }
+  ]
+}
