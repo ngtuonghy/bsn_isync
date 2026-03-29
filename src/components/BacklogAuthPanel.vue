@@ -1,4 +1,3 @@
-```
 <script setup lang="ts">
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
