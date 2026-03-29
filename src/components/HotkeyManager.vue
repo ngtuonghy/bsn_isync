@@ -4,7 +4,7 @@ import { Button } from './ui/button';
 import { Beaker, Hammer, Pencil, RotateCw, Trash2, X, Keyboard, Play, Square } from 'lucide-vue-next';
 import HotkeyLabel from './HotkeyLabel.vue';
 
-const props = defineProps<{
+defineProps<{
   shortcuts: Record<string, string>;
   isRecording: boolean;
   recordingAction: string | null;

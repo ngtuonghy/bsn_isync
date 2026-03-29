@@ -4,7 +4,7 @@ const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { onClickOutside } from "@vueuse/core";
-import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Settings2, Database, Code2, FolderSync, Zap, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, Keyboard, FileDown } from "lucide-vue-next";
+import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Settings2, Database, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, Keyboard, FileDown } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
@@ -126,8 +126,6 @@ const TERMINAL_THEMES = {
 
 const dark = ref(false);
 const activeTab = ref<"runner" | "sync">("runner");
-const isConfigCollapsed = ref(true);
-const configSectionRef = ref<HTMLElement | null>(null);
 const mainScrollRef = ref<HTMLElement | null>(null);
 
 const canBuild = computed(() => {
@@ -143,21 +141,6 @@ const canRun = computed(() => {
 });
 
 
-function toggleConfig() {
-  isConfigCollapsed.value = !isConfigCollapsed.value;
-  if (!isConfigCollapsed.value) {
-    // Wait for the transition to provide accurate height/layout
-    setTimeout(() => {
-      if (configSectionRef.value && mainScrollRef.value) {
-        const top = configSectionRef.value.offsetTop;
-        mainScrollRef.value.scrollTo({
-          top: top - 16, // px offset for better visual alignment
-          behavior: 'smooth'
-        });
-      }
-    }, 100);
-  }
-}
 type ProjectProfile = {
   id: string;
   name: string;
@@ -1337,7 +1320,6 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
     return;
   }
 
-  const prevStatus = syncStatus.value;
   syncStatus.value = skipPush ? 'saving' : 'saving'; // Both show the spinner/syncing state
   
   try {
@@ -3074,7 +3056,7 @@ onUnmounted(() => {
                               </div>
                               
                               <div class="flex items-center gap-1.5 p-1.5 rounded-xl bg-muted/40 shadow-inner border border-primary/5">
-                                <Select v-model="runner.activeSqlSnippetId" @update:model-value="onSnippetSelected" :disabled="runner.sqlSnippets.length === 0">
+                                <Select v-model="runner.activeSqlSnippetId" @update:model-value="(v: any) => onSnippetSelected(v)" :disabled="runner.sqlSnippets.length === 0">
                                   <SelectTrigger class="h-8 flex-1 text-[10px] font-bold bg-background shadow-sm border-primary/10 rounded-lg hover:border-primary/30 transition-colors">
                                     <SelectValue placeholder="No scripts found..." />
                                   </SelectTrigger>
