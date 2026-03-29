@@ -4,11 +4,13 @@ const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { onClickOutside } from "@vueuse/core";
-import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronDown, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Share2 } from "lucide-vue-next";
+import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, ChevronRight, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Settings2, Database, Code2, FolderSync, Zap, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, Keyboard, FileDown } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { register as registerShortcut, unregister as unregisterShortcut, isRegistered } from "@tauri-apps/plugin-global-shortcut";
@@ -31,8 +33,15 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import BacklogAuthPanel from "@/components/backlog/BacklogAuthPanel.vue";
+import BacklogAuthPanel from "@/components/BacklogAuthPanel.vue";
 import {
   fetchBacklogProfileWithToken,
   fetchBacklogProjects,
@@ -46,15 +55,14 @@ import {
 } from "@/lib/backlogAuth";
 import { useStore } from "@/composables/useStore";
 import { SyncService } from "@/lib/sync";
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogHeader, 
-  DialogTitle, 
-  DialogDescription, 
-  DialogFooter,
-  DialogTrigger
-} from "@/components/ui/dialog";
+import HotkeyLabel from "@/components/HotkeyLabel.vue";
+import HotkeyManager from "@/components/HotkeyManager.vue";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import "./index.css";
 import { Terminal } from 'xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -154,8 +162,8 @@ type ProjectProfile = {
   id: string;
   name: string;
   owner: string;
-  workspaceRoot?: string;
-  projectRoot: string;
+  workspaceRoot?: string; // Legacy: No longer used for new profiles
+  projectRoot: string; // Now stored as relative path from runner.workspaceRoot
   startupProject: string;
   buildConfig: string;
   urls: string;
@@ -169,12 +177,16 @@ type ProjectProfile = {
   sqlPassword?: string;
   useWindowsAuth?: boolean;
   configTemplate: string;
+  runConfigTemplate?: string;
+  sqlSnippets?: { id: string; name: string; content: string }[];
+  activeSqlSnippetId?: string;
   sync?: any;
   backlogProjectKey?: string;
   backlogIssueTypeId?: number;
   backlogIssueKey?: string;
   backlogIssueSummary?: string;
-  shortcut?: string;
+  deployPath?: string;
+  shortcuts?: Record<string, string>;
 };
 
 type EnvCheck = {
@@ -200,7 +212,7 @@ const selectedSetupId = ref("");
 const currentUser = computed(() => backlog.profile?.name || backlog.profile?.userId || "");
 const selectedOwner = ref("");
 const profileSearch = ref("");
-const profileScope = ref<"personal" | "shared" | "team">("personal");
+const profileScope = ref<"personal" | "shared" | "team">("team");
 
 
 
@@ -260,31 +272,13 @@ async function checkForUpdates(manual = false) {
   }
 }
 
-const isNotificationEnabled = ref(true); // Default to true, will be loaded from store
-
+const isNotificationEnabled = ref(true);
 const syncStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
-const CLOUDFLARE_WORKER_URL = "https://bsn-isync-sync-worker.ngtuonghy.workers.dev"; // Changed to a real-ish placeholder
+const isApplyingProfile = ref(false);
+const loadedIssueTypesProjectKey = ref<string | null>(null);
+const CLOUDFLARE_WORKER_URL = "https://bsn-isync-sync-worker.ngtuonghy.workers.dev";
 
 const { setItem, getItem } = useStore();
-const isShareDialogOpen = ref(false);
-const shareTargetUserId = ref('');
-const shareRole = ref<'editor' | 'viewer'>('editor');
-
-async function handleShare() {
-  if (!selectedSetupId.value || !shareTargetUserId.value || !syncService.value) return;
-  try {
-    const res = await syncService.value.shareProfile(selectedSetupId.value, shareTargetUserId.value, shareRole.value);
-    if (res.success) {
-      toast.success("Profile shared successfully");
-      isShareDialogOpen.value = false;
-      shareTargetUserId.value = '';
-    } else {
-      toast.error("Sharing failed", { description: res.error });
-    }
-  } catch (e) {
-    toast.error("Sharing failed", { description: String(e) });
-  }
-}
 
 const syncService = computed(() => {
   if (!backlog.host || !backlog.token?.access_token) return null;
@@ -340,6 +334,17 @@ async function loadUIState() {
     if (state.profileScope) profileScope.value = state.profileScope;
     if (state.workspaceRoot) runner.workspaceRoot = state.workspaceRoot;
     if (state.isNotificationEnabled !== undefined) isNotificationEnabled.value = state.isNotificationEnabled;
+    if (state.shortcuts) {
+      // Merge with defaults to ensure new shortcut keys (test, run) are present
+      Object.assign(runner.shortcuts, {
+        test: 'Alt+Shift+T',
+        run: 'Alt+Shift+R',
+        build: 'Alt+Shift+B',
+        rebuild: 'Alt+Shift+U',
+        stop: 'Alt+Shift+S',
+        ...state.shortcuts
+      });
+    }
     if (state.backlog) {
       if (state.backlog.host) backlog.host = state.backlog.host;
       if (state.backlog.token) {
@@ -396,6 +401,7 @@ async function saveUIState() {
       profileScope: profileScope.value,
       workspaceRoot: runner.workspaceRoot,
       isNotificationEnabled: isNotificationEnabled.value,
+      shortcuts: runner.shortcuts,
       backlog: {
         host: backlog.host,
         token: backlog.token,
@@ -715,6 +721,11 @@ async function loadBacklogProjects() {
 async function loadBacklogIssueTypes(projectKey: string) {
   if (!backlog.token?.access_token || !backlog.host || !projectKey) return;
 
+  // OPTIMIZATION: Skip fetch if issueTypes are already loaded for this project
+  if (projectKey === loadedIssueTypesProjectKey.value && backlog.issueTypes.length > 0) {
+    return;
+  }
+
   const ok = await ensureValidBacklogToken();
   if (!ok) return;
 
@@ -725,6 +736,7 @@ async function loadBacklogIssueTypes(projectKey: string) {
   });
   if (res.status === "success") {
     backlog.issueTypes = res.issueTypes;
+    loadedIssueTypesProjectKey.value = projectKey; // Cache project key
   }
 }
 
@@ -760,22 +772,47 @@ const filteredBacklogIssues = computed(() => {
   );
 });
 
+const issueSearchContainerRef = ref<HTMLElement | null>(null);
+onClickOutside(issueSearchContainerRef, () => {
+  showIssueSearch.value = false;
+});
+
 function selectBacklogIssue(issue: BacklogIssue) {
   runner.backlogIssueKey = issue.issueKey;
   runner.backlogIssueSummary = issue.summary;
-  
-  // Example: tính năng 1 - BSN_IMPRROT
-  // When selecting an issue, we update the custom part to either be the summary (if default) 
-  // or keep current custom part.
-  let currentName = editableProfileName.value.trim();
-  // Strip existing key if any from the display name to get clean custom part
-  currentName = currentName.replace(/\s*-\s*[A-Z0-9_]+-[0-9]+$/i, "");
+}
 
-  if (currentName.startsWith("Setup ") || !currentName) {
-    editableProfileName.value = issue.summary;
+const isNamingSqlSnippet = ref(false);
+const namingSqlSnippetMode = ref<'create' | 'rename'>('create');
+const namingSqlSnippetValue = ref('');
+const namingSqlSnippetTitle = computed(() => namingSqlSnippetMode.value === 'create' ? 'Create New SQL Script' : 'Rename SQL Script');
+
+function startNamingSqlSnippet(mode: 'create' | 'rename') {
+  namingSqlSnippetMode.value = mode;
+  if (mode === 'create') {
+    namingSqlSnippetValue.value = 'New Script';
   } else {
-    editableProfileName.value = currentName;
+    const snippet = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
+    namingSqlSnippetValue.value = snippet?.name || '';
   }
+  isNamingSqlSnippet.value = true;
+}
+
+function commitSqlSnippetName() {
+  const name = namingSqlSnippetValue.value.trim();
+  if (!name) return;
+
+  if (namingSqlSnippetMode.value === 'create') {
+    const id = "snippet_" + Date.now();
+    runner.sqlSnippets.push({ id, name, content: "" });
+    runner.activeSqlSnippetId = id;
+    runner.sqlSetupPath = "";
+  } else {
+    const snippet = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
+    if (snippet) snippet.name = name;
+  }
+  
+  isNamingSqlSnippet.value = false;
 }
 
 function unlinkBacklogIssue() {
@@ -841,10 +878,13 @@ const canEditSelected = computed(() => {
   if (!selectedProfile.value) return false;
   return !selectedProfile.value.owner || selectedProfile.value.owner === currentUser.value;
 });
+
+const canExecuteSelected = computed(() => {
+  return !!selectedProfile.value;
+});
 // selectedProject removed
 // selectedProjectLabel removed
 const profileNameInput = ref<HTMLInputElement | null>(null);
-const isEditingProfileName = ref(false);
 const editableProfileName = ref("");
 
 let unlistenRunnerLog: (() => void) | undefined;
@@ -861,35 +901,57 @@ const runner = reactive({
   batFilePath: "",
   runArgs: "",
   sqlSetupPath: "",
-  sqlServer: "",
+  sqlServer: localStorage.getItem("bsn_isync:sql_server_host") || "",
   sqlDatabase: "Arkbell_01",
   sqlUser: "",
   sqlPassword: "",
   useWindowsAuth: true,
+  sqlSnippets: [] as { id: string; name: string; content: string }[],
+  activeSqlSnippetId: "",
   buildStatus: null as string | null,
   configTemplate: `<?xml version="1.0" encoding="utf-8"?>
 <configuration>
-  <configSections>
-    <section name="entityFramework" type="System.Data.Entity.Internal.ConfigFile.EntityFrameworkSection, EntityFramework, Version=6.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089" requirePermission="false" />
-  </configSections>
-  <startup>
-    <supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.7.1" />
-  </startup>
-  <appSettings>
-    <add key="Job.MsmqName" value="JE5912" />
-    <add key="Job.BatFilePath" value=".\" />
-    <add key="Job.SyncMode" value="sync" />
-    <add key="Execute.EnvId" value="Arkbell_Dev" />
-    <add key="ClientSettingsProvider.ServiceUri" value="" />
-  </appSettings>
-  <connectionStrings>
-    <add name="EntityFramework" connectionString="" providerName="System.Data.SqlClient" />
-  </connectionStrings>
-  <entityFramework>
-    <providers>
-      <provider invariantName="System.Data.SqlClient" type="System.Data.Entity.SqlServer.SqlProviderServices, EntityFramework.SqlServer" />
-    </providers>
-  </entityFramework>
+	<configSections>
+		<section name="entityFramework" type="System.Data.Entity.Internal.ConfigFile.EntityFrameworkSection, EntityFramework, Version=6.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089" requirePermission="false" />
+	</configSections>
+	<startup>
+		<supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.7.1" />
+	</startup>
+	<entityFramework>
+		<providers>
+			<provider invariantName="System.Data.SqlClient" type="System.Data.Entity.SqlServer.SqlProviderServices, EntityFramework.SqlServer" />
+		</providers>
+	</entityFramework>
+	<connectionStrings>
+		<add name="EntityFramework" connectionString="Data Source=GIGABYTE;Initial Catalog=Arkbell_01;Integrated Security=True;MultipleActiveResultSets=True;Connect Timeout=30;Application Name=ArkbellOnlineSystem" providerName="System.Data.SqlClient" />
+	</connectionStrings>
+	<appSettings>
+		<add key="Job.MsmqName" value="JE5912" />
+		<add key="Job.BatFilePath" value="C:\\Users\\ngtuonghy_rikai\\source\\repos\\BSN_Improve_Invoice\\Invoice\\batch\\04_オンラインバッチ\\370300_請求書出力_宴集会\\JE5912.bat" />
+		<add key="Execute.EnvId" value="Arkbell_Dev" />
+	</appSettings>
+</configuration>`,
+  runConfigTemplate: `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+	<configSections>
+		<section name="entityFramework" type="System.Data.Entity.Internal.ConfigFile.EntityFrameworkSection, EntityFramework, Version=6.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089" requirePermission="false" />
+	</configSections>
+	<startup>
+		<supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.7.1" />
+	</startup>
+	<entityFramework>
+		<providers>
+			<provider invariantName="System.Data.SqlClient" type="System.Data.Entity.SqlServer.SqlProviderServices, EntityFramework.SqlServer" />
+		</providers>
+	</entityFramework>
+	<connectionStrings>
+		<add name="EntityFramework" connectionString="Data Source=GIGABYTE;Initial Catalog=Arkbell_01;Integrated Security=True;MultipleActiveResultSets=True;Connect Timeout=30;Application Name=ArkbellOnlineSystem" providerName="System.Data.SqlClient" />
+	</connectionStrings>
+	<appSettings>
+		<add key="Job.MsmqName" value="JE5912" />
+		<add key="Job.BatFilePath" value="C:\\Users\\ngtuonghy_rikai\\source\\repos\\BSN_Improve_Invoice\\Invoice\\batch\\04_オンラインバッチ\\370300_請求書出力_宴集会\\JE5912.bat" />
+		<add key="Execute.EnvId" value="Arkbell_Dev" />
+	</appSettings>
 </configuration>`,
   running: false,
   loadingTarget: null as "exe" | "build" | "restore" | "rebuild" | "bat" | null,
@@ -899,34 +961,63 @@ const runner = reactive({
   backlogIssueTypeId: undefined as number | undefined,
   backlogIssueKey: "",
   backlogIssueSummary: "",
-  shortcut: "Alt+Shift+M",
+  shortcuts: {
+    test: 'Alt+Shift+T',
+    run: 'Alt+Shift+R',
+    build: 'Alt+Shift+B',
+    rebuild: 'Alt+Shift+U',
+    stop: 'Alt+Shift+S',
+  } as Record<string, string>,
+  autoDeployConfig: false,
+  deployPath: "",
+});
+
+const isRecordingShortcut = ref(false);
+const recordingAction = ref<string | null>(null);
+const showHotkeySettings = ref(false);
+const hotkeyContainerRef = ref<HTMLElement | null>(null);
+
+onClickOutside(hotkeyContainerRef, () => {
+  showHotkeySettings.value = false;
+  if (isRecordingShortcut.value) stopRecordingShortcut();
 });
 
 // RunArgs are now per-profile, no global sync needed
 
-// Sync shortcut globally as it's independent of profiles
-watch(() => runner.shortcut, (val) => {
-  window.localStorage.setItem("bsn_isync:global:shortcut", val);
-});
 
 // --- Autosave logic ---
 watch(() => {
   const { running, loadingTarget, logs, childPid, buildStatus, ...rest } = runner;
   return rest;
 }, (newVal, oldVal) => {
-  // Only autosave if essential fields changed (exclude running state)
-  if (JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
-    if (selectedSetupId.value && canEditSelected.value) {
-      saveCurrentToSelectedSetupProfile();
+  // CRITICAL: Block auto-save if we are currently loading/applying a profile to avoid race syncs
+  if (!isApplyingProfile.value && JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
+    if (selectedSetupId.value) {
+      if (canEditSelected.value) {
+        saveCurrentToSelectedSetupProfile();
+      } else {
+        // Save local overrides for non-owners (Guest behavior)
+        const diff: any = {};
+        if (newVal.sqlServer !== oldVal.sqlServer) diff.sqlServer = newVal.sqlServer;
+        if (newVal.sqlDatabase !== oldVal.sqlDatabase) diff.sqlDatabase = newVal.sqlDatabase;
+        if (Object.keys(diff).length > 0) {
+          saveLocalOverride(selectedSetupId.value, diff);
+        }
+      }
     }
   }
 }, { deep: true });
 
+// UNIFIED BACKLOG PROJECT WATCHER: 
+// Consolidates persistence, issue types, and issue loading.
 watch(() => runner.backlogProjectKey, (newKey) => {
   if (newKey) {
     window.localStorage.setItem("backlog_last_project", newKey);
-    // When project changes in header, also fetch new issues
+    void loadBacklogIssueTypes(newKey);
     void loadBacklogIssues();
+  } else {
+    backlog.issueTypes = [];
+    loadedIssueTypesProjectKey.value = null;
   }
 });
 
@@ -965,24 +1056,53 @@ function insertTimePlaceholder() {
   });
 }
 
-watch(() => runner.backlogProjectKey, (newKey) => {
-  if (newKey) {
-    loadBacklogIssueTypes(newKey);
-    loadBacklogIssues();
+
+function applyConfigSyncToTemplates() {
+  const msmq = runner.aliasExeName.replace(/\.exe$/i, "");
+  
+  const syncTemplate = (tpl: string) => {
+    if (!tpl) return tpl;
+    let t = tpl;
+    // 1. Replace Job.MsmqName value
+    t = t.replace(/(<add key="Job\.MsmqName" value=")([^"]*)(" \/>)/, `$1${msmq}$3`);
+    // 2. Replace Job.BatFilePath value
+    t = t.replace(/(<add key="Job\.BatFilePath" value=")([^"]*)(" \/>)/, `$1${runner.batFilePath || '.\\' }$3`);
+    
+    // 3. Sync SQL Server into connectionStrings (Data Source & Server)
+    if (runner.sqlServer) {
+      t = t.replace(/(Data Source=)([^;]*)(\b|;)/i, `$1${runner.sqlServer}$3`);
+      t = t.replace(/(Server=)([^;]*)(\b|;)/i, `$1${runner.sqlServer}$3`);
+      // Also sync Report.DBServer
+      t = t.replace(/(<add key="Report\.DBServer" value=")([^"]*)(" \/>)/, `$1${runner.sqlServer}$3`);
+    }
+    // 4. Sync SQL Database into connectionStrings (Initial Catalog)
+    if (runner.sqlDatabase) {
+      t = t.replace(/(Initial Catalog=)([^;]*)(\b)/i, `$1${runner.sqlDatabase}$3`);
+    }
+    return t;
+  };
+
+  runner.configTemplate = syncTemplate(runner.configTemplate);
+  runner.runConfigTemplate = syncTemplate(runner.runConfigTemplate);
+}
+// Auto-sync both templates with UI inputs
+watch(() => [runner.aliasExeName, runner.batFilePath, runner.sqlServer, runner.sqlDatabase], applyConfigSyncToTemplates);
+
+// Auto-derive EXE Name from BAT Path silently
+watch(() => runner.batFilePath, (newPath) => {
+  if (newPath) {
+    const filenameMatch = newPath.match(/[^\\/]+$/);
+    if (filenameMatch) {
+      runner.aliasExeName = filenameMatch[0].replace(/\.[^/.]+$/, "") + ".exe";
+    }
+  } else {
+    runner.aliasExeName = "";
   }
 });
 
-// Auto-sync configTemplate with UI inputs
-watch(() => [runner.aliasExeName, runner.batFilePath], () => {
-  const msmq = runner.aliasExeName.replace(/\.exe$/i, "");
-  let tpl = runner.configTemplate;
-  
-  // Replace Job.MsmqName value
-  tpl = tpl.replace(/(<add key="Job\.MsmqName" value=")([^"]*)(" \/>)/, `$1${msmq}$3`);
-  // Replace Job.BatFilePath value
-  tpl = tpl.replace(/(<add key="Job\.BatFilePath" value=")([^"]*)(" \/>)/, `$1${runner.batFilePath || '.\\' }$3`);
-  
-  runner.configTemplate = tpl;
+// Persist SQL Server globally directly
+watch(() => runner.sqlServer, (val) => {
+  localStorage.setItem('bsn_isync:sql_server_host', val || '');
 });
 
 
@@ -1002,13 +1122,65 @@ function setupStorageKey() {
   return `bsn_isync:project_profiles`;
 }
 
+function localOverrideStorageKey(profileId: string) {
+  return `bsn_isync:local_overrides:${profileId}`;
+}
+
+const localOverrides = ref<Record<string, { sqlServer?: string; sqlDatabase?: string }>>({});
+
+async function loadLocalOverrides(profileId: string) {
+  if (!profileId) return;
+  try {
+    const raw = await getItem<any>(localOverrideStorageKey(profileId));
+    if (raw) {
+      localOverrides.value[profileId] = raw;
+    }
+  } catch (e) {
+    console.error("Failed to load local overrides", e);
+  }
+}
+
+async function saveLocalOverride(profileId: string, data: { sqlServer?: string; sqlDatabase?: string }) {
+  if (!profileId) return;
+  const key = localOverrideStorageKey(profileId);
+  const current = localOverrides.value[profileId] || {};
+  const updated = { ...current, ...data };
+  localOverrides.value[profileId] = updated;
+  await setItem(key, updated);
+}
+
+async function resetLocalOverrides(profileId: string) {
+  if (!profileId) return;
+  delete localOverrides.value[profileId];
+  await setItem(localOverrideStorageKey(profileId), null);
+  applySelectedSetupProfile(true);
+}
+
+const isServerOverridden = computed(() => {
+  if (!selectedSetupId.value) return false;
+  return !!localOverrides.value[selectedSetupId.value]?.sqlServer;
+});
+
+const isDatabaseOverridden = computed(() => {
+  if (!selectedSetupId.value) return false;
+  return !!localOverrides.value[selectedSetupId.value]?.sqlDatabase;
+});
+
 function buildSetupFromRunner(name: string): ProjectProfile {
+  // Store projectRoot RELATIVE to workspaceRoot if possible
+  let projectRoot = runner.projectRoot;
+  if (runner.workspaceRoot && projectRoot.startsWith(runner.workspaceRoot)) {
+    projectRoot = projectRoot.substring(runner.workspaceRoot.length);
+    if (projectRoot.startsWith("\\") || projectRoot.startsWith("/")) {
+      projectRoot = projectRoot.substring(1);
+    }
+  }
+
   return {
     id: makeProfileId(),
     name,
     owner: currentUser.value,
-    workspaceRoot: runner.workspaceRoot,
-    projectRoot: runner.projectRoot,
+    projectRoot,
     startupProject: runner.startupProject,
     buildConfig: runner.config === "Release" ? "Release" : "Debug",
     urls: runner.urls,
@@ -1022,6 +1194,9 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     sqlPassword: runner.sqlPassword,
     useWindowsAuth: runner.useWindowsAuth,
     configTemplate: runner.configTemplate,
+    runConfigTemplate: runner.runConfigTemplate,
+    sqlSnippets: JSON.parse(JSON.stringify(runner.sqlSnippets)),
+    activeSqlSnippetId: runner.activeSqlSnippetId,
     backlogProjectKey: runner.backlogProjectKey,
     backlogIssueTypeId: runner.backlogIssueTypeId,
     backlogIssueKey: runner.backlogIssueKey,
@@ -1035,11 +1210,17 @@ function buildSetupFromRunner(name: string): ProjectProfile {
 }
 
 function applySetupToRunner(setup: ProjectProfile) {
-  if (setup.workspaceRoot) runner.workspaceRoot = setup.workspaceRoot;
+  // 1. Resolve Project Root (handle both absolute migration and relative expansion)
+  let absoluteRoot = setup.projectRoot || "";
+  if (absoluteRoot && !/^[A-Z]:\\/i.test(absoluteRoot) && !absoluteRoot.startsWith("\\\\") && !absoluteRoot.startsWith("/")) {
+    // It's a RELATIVE path, prepend current workspaceRoot
+    const ws = runner.workspaceRoot.replace(/[\\/]$/, "");
+    absoluteRoot = ws ? `${ws}\\${absoluteRoot}` : absoluteRoot;
+  }
   
-  // Always update project fields even if empty
-  runner.projectRoot = setup.projectRoot || "";
-  selectedProjectRoot.value = setup.projectRoot || "";
+  // Update runner with absolute path for execution
+  runner.projectRoot = normalizePath(absoluteRoot);
+  selectedProjectRoot.value = runner.projectRoot;
   runner.startupProject = setup.startupProject || "";
   
   runner.config = setup.buildConfig;
@@ -1049,12 +1230,28 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.runArgs = setup.runArgs || "";
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
-  runner.sqlServer = setup.sqlServer || "";
+  // Deliberately DO NOT override runner.sqlServer: keep it local per machine
   runner.sqlDatabase = setup.sqlDatabase || "";
   runner.sqlUser = setup.sqlUser || "";
   runner.sqlPassword = setup.sqlPassword || "";
   runner.useWindowsAuth = !!setup.useWindowsAuth;
   runner.configTemplate = setup.configTemplate || "";
+  runner.runConfigTemplate = setup.runConfigTemplate || "";
+  
+  if (setup.sqlSnippets && Array.isArray(setup.sqlSnippets)) {
+    runner.sqlSnippets = JSON.parse(JSON.stringify(setup.sqlSnippets));
+  } else if (setup.sqlSetupPath) {
+    // Migrate old setup path to snippets array
+    runner.sqlSnippets = [{ id: "default_snippet_1", name: "Default Script", content: setup.sqlSetupPath }];
+  } else {
+    runner.sqlSnippets = [];
+  }
+  
+  runner.activeSqlSnippetId = setup.activeSqlSnippetId || (runner.sqlSnippets.length > 0 ? runner.sqlSnippets[0].id : "");
+  // keep runner.sqlSetupPath synced for backward compatibility with rust backend or simple execution logic
+  const activeSnippet = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
+  runner.sqlSetupPath = activeSnippet ? activeSnippet.content : (setup.sqlSetupPath || "");
+
   runner.backlogProjectKey = setup.backlogProjectKey || "";
   runner.backlogIssueTypeId = setup.backlogIssueTypeId;
   runner.backlogIssueKey = setup.backlogIssueKey || "";
@@ -1064,10 +1261,15 @@ function applySetupToRunner(setup: ProjectProfile) {
   if (setup.sync) {
     Object.assign(sync, setup.sync);
   }
-  
-  // Backlog linkage
-  if (setup.backlogProjectKey) {
-    void loadBacklogIssueTypes(setup.backlogProjectKey);
+
+  // Implicitly populate configs from Project Source Files
+  loadConfigsForCurrentProject();
+
+  // 2. Apply Local Overrides if any
+  const overrides = localOverrides.value[setup.id];
+  if (overrides) {
+    if (overrides.sqlServer) runner.sqlServer = overrides.sqlServer;
+    if (overrides.sqlDatabase) runner.sqlDatabase = overrides.sqlDatabase;
   }
 }
 
@@ -1085,7 +1287,14 @@ async function loadSetupsForCurrentRoot() {
     const normalized = raw.map((setup) => ({
       ...setup,
       owner: (setup as any).owner || currentUser.value,
-    }));
+    })).filter((p, _, self) => {
+      // PRUNE GHOST PROFILES:
+      // Remove any that have no project root AND use a default name AND aren't the only one
+      const isPlaceholder = !p.projectRoot && /^Setup\s+\d+$/i.test(p.name);
+      if (isPlaceholder && self.length > 1) return false;
+      return true;
+    });
+
     setupProfiles.value = normalized;
     ensureVisibleSelection();
     if (selectedSetupId.value) applySelectedSetupProfile();
@@ -1096,17 +1305,25 @@ async function loadSetupsForCurrentRoot() {
 
 async function saveSetupsForCurrentRoot() {
   await setItem(setupStorageKey(), setupProfiles.value);
-  // Trigger Cloudflare Sync
-  triggerSync();
+  // Trigger Incremental Cloudflare Sync for the active profile
+  // CRITICAL: Skip sync if we are currently APPLYING a profile to avoid feedback loops
+  if (!isApplyingProfile.value) {
+    triggerSync(selectedSetupId.value);
+  }
 }
 
 let syncTimer: number | undefined;
-function triggerSync() {
+let lastSyncContext = { targetId: undefined as string | undefined, skipPush: false };
+
+function triggerSync(id?: string, skipPush = false) {
   if (syncTimer) clearTimeout(syncTimer);
-  syncStatus.value = 'saving';
+  
+  lastSyncContext = { targetId: id, skipPush };
+  
   syncTimer = window.setTimeout(async () => {
-    await syncProfilesWithCloudflare();
-  }, 2000); // 2 second debounce for auto-save
+    syncStatus.value = lastSyncContext.skipPush ? 'idle' : 'saving';
+    await syncProfilesWithCloudflare(lastSyncContext.targetId, lastSyncContext.skipPush);
+  }, 2000); // 4-second precise physiological debounce matching human typing pause
 }
 
 /**
@@ -1114,24 +1331,77 @@ function triggerSync() {
  * Only the project configurations (roots, paths, runner args) are synced.
  * UI preferences and Backlog tokens are excluded from this process.
  */
-async function syncProfilesWithCloudflare() {
+async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
   if (!syncService.value) {
     syncStatus.value = 'idle';
     return;
   }
 
+  const prevStatus = syncStatus.value;
+  syncStatus.value = skipPush ? 'saving' : 'saving'; // Both show the spinner/syncing state
+  
   try {
-    // Only sync profiles owned/edited by current user that changed
-    // For simplicity in this version, we sync all setupProfiles
-    for (const profile of setupProfiles.value) {
-      if (profile.owner === currentUser.value) {
-        await syncService.value.upsertProfile({
-          id: profile.id,
-          name: profile.name,
-          content: profile
-        });
+    // 1. PUSH (Incremental or Full)
+    if (!skipPush) {
+      if (targetId) {
+        // INCREMENTAL PUSH: Only upload the specific profile that changed
+        const profile = setupProfiles.value.find(p => p.id === targetId);
+        if (profile && profile.owner === currentUser.value) {
+          await syncService.value.upsertProfile({
+            id: profile.id,
+            name: profile.name,
+            content: profile
+          });
+        }
+      } else {
+        // FULL PUSH: Standard behavior for startup or manual refresh
+        for (const profile of setupProfiles.value) {
+          if (profile.owner === currentUser.value) {
+            await syncService.value.upsertProfile({
+              id: profile.id,
+              name: profile.name,
+              content: profile
+            });
+          }
+        }
       }
     }
+
+    // 2. PULL ALL profiles from cloud (or targeted pull)
+    // CRITICAL: If targetId is provided, always prefer a targeted pull to avoid bulk GET
+    const cloudResults = targetId 
+      ? [await syncService.value.getProfile(targetId)].filter(Boolean)
+      : await syncService.value.getProfiles();
+
+    const localMap = new Map(setupProfiles.value.map(p => [p.id, p]));
+    let changed = false;
+
+    cloudResults.forEach((cp: any) => {
+      const content = typeof cp.content === 'string' ? JSON.parse(cp.content) : cp.content;
+      if (!content) return;
+      
+      if (!localMap.has(cp.id)) {
+        // Validation: New profile from cloud must be meaningful
+        const isPlaceholder = !content.projectRoot && /^Setup\s+\d+$/i.test(content.name);
+        if (isPlaceholder) return; // Skip "ghost" profiles from cloud
+
+        setupProfiles.value.push({ ...content });
+        changed = true;
+      } else {
+        const local = localMap.get(cp.id)!;
+        // If it's someone else's profile, update our local copy from cloud
+        if (local.owner !== currentUser.value) {
+          const idx = setupProfiles.value.findIndex(p => p.id === cp.id);
+          setupProfiles.value[idx] = { ...content };
+          changed = true;
+        }
+      }
+    });
+
+    if (changed) {
+      await setItem(setupStorageKey(), setupProfiles.value);
+    }
+
     syncStatus.value = 'saved';
     setTimeout(() => { if (syncStatus.value === 'saved') syncStatus.value = 'idle'; }, 3000);
   } catch (e) {
@@ -1183,28 +1453,41 @@ watch(currentUser, (newVal) => {
   }
 }, { immediate: true });
 
-watch(() => runner.backlogProjectKey, (newVal) => {
-  if (newVal) {
-    void loadBacklogIssueTypes(newVal);
-  } else {
-    backlog.issueTypes = [];
-  }
-});
 
 watch(selectedSetupId, (next, prev) => {
   if (next && next !== prev) {
-    isEditingProfileName.value = false;
     applySelectedSetupProfile(true);
+    // On-click sync: Perform a PULL-only sync IMMEDIATELY (no debounce) for better feedback
+    void syncProfilesWithCloudflare(next, true);
+    // Also load local overrides for the new profile
+    void loadLocalOverrides(next);
   }
 });
 
-function applySelectedSetupProfile(silent = false) {
+async function applySelectedSetupProfile(silent = false) {
   const setup = setupProfiles.value.find((x) => x.id === selectedSetupId.value);
   if (!setup) {
     if (!silent) toast.error("Setup profile not selected");
     return;
   }
+  
+  // LOCK: Block auto-save watchers while we populate the form
+  isApplyingProfile.value = true;
+  
+  // Initialize editable name for the restored input field
+  let name = setup.name;
+  if (setup.backlogIssueKey) {
+    const keyMatch = new RegExp(`\\s*-\\s*${setup.backlogIssueKey}$`, "i");
+    name = name.replace(keyMatch, "");
+  }
+  editableProfileName.value = name;
+  
   applySetupToRunner(setup);
+  
+  // UNLOCK: Release after a short delay to allow all debounced/buffered watchers to settle
+  setTimeout(() => {
+    isApplyingProfile.value = false;
+  }, 100);
 }
 
 function saveCurrentToSelectedSetupProfile() {
@@ -1215,8 +1498,17 @@ function saveCurrentToSelectedSetupProfile() {
   if (idx < 0) return;
   
   const setup = { ...setupProfiles.value[idx] };
-  setup.workspaceRoot = runner.workspaceRoot;
-  setup.projectRoot = runner.projectRoot;
+  
+  // Store projectRoot RELATIVE to workspaceRoot if possible
+  let projectRoot = runner.projectRoot;
+  if (runner.workspaceRoot && projectRoot.startsWith(runner.workspaceRoot)) {
+    projectRoot = projectRoot.substring(runner.workspaceRoot.length);
+    if (projectRoot.startsWith("\\") || projectRoot.startsWith("/")) {
+      projectRoot = projectRoot.substring(1);
+    }
+  }
+  
+  setup.projectRoot = projectRoot;
   setup.startupProject = runner.startupProject;
   setup.buildConfig = runner.config === "Release" ? "Release" : "Debug";
   setup.urls = runner.urls;
@@ -1224,12 +1516,15 @@ function saveCurrentToSelectedSetupProfile() {
   setup.batFilePath = runner.batFilePath;
   setup.runArgs = runner.runArgs;
   setup.sqlSetupPath = runner.sqlSetupPath;
-  setup.sqlServer = runner.sqlServer;
+  // Deliberately omitted sqlServer to prevent syncing local workstation host configs to cloud
   setup.sqlDatabase = runner.sqlDatabase;
   setup.sqlUser = runner.sqlUser;
   setup.sqlPassword = runner.sqlPassword;
   setup.useWindowsAuth = runner.useWindowsAuth;
   setup.configTemplate = runner.configTemplate;
+  setup.runConfigTemplate = runner.runConfigTemplate;
+  setup.sqlSnippets = JSON.parse(JSON.stringify(runner.sqlSnippets));
+  setup.activeSqlSnippetId = runner.activeSqlSnippetId;
   setup.sync = (() => {
     const { logs, ...syncData } = sync;
     return JSON.parse(JSON.stringify(syncData));
@@ -1244,39 +1539,25 @@ function saveCurrentToSelectedSetupProfile() {
   saveSetupsForCurrentRoot();
 }
 
-function startEditingProfileName() {
+const preventAutoSearch = ref(false);
+
+function focusProfileName() {
   if (!selectedProfile.value || !canEditSelected.value) return;
-  // Extract custom part from full name (strip " - KEY")
-  let name = selectedProfile.value.name;
-  if (selectedProfile.value.backlogIssueKey) {
-    const keyMatch = new RegExp(`\\s*-\\s*${selectedProfile.value.backlogIssueKey}$`, "i");
-    name = name.replace(keyMatch, "");
-  }
-  editableProfileName.value = name;
-  isEditingProfileName.value = true;
-  nextTick(() => profileNameInput.value?.focus());
-}
-
-
-function cancelEditingProfileName() {
-  isEditingProfileName.value = false;
-  editableProfileName.value = "";
+  nextTick(() => {
+    profileNameInput.value?.focus();
+  });
 }
 
 function commitProfileName() {
-  if (!isEditingProfileName.value) return;
   if (!canEditSelected.value) {
-    cancelEditingProfileName();
     return;
   }
   const namePart = editableProfileName.value.trim();
   if (!namePart) {
-    cancelEditingProfileName();
     return;
   }
   const idx = setupProfiles.value.findIndex((x) => x.id === selectedSetupId.value);
   if (idx < 0) {
-    cancelEditingProfileName();
     return;
   }
   const setup = { ...setupProfiles.value[idx] };
@@ -1290,14 +1571,13 @@ function commitProfileName() {
   
   setupProfiles.value[idx] = setup;
   saveSetupsForCurrentRoot();
-  cancelEditingProfileName();
 }
 
 function createNewSetupProfile() {
   if (runner.running) {
     return;
   }
-  
+
   if (backlog.status !== 'success') {
     toast.error("Backlog Login Required", {
       description: "You need to log in to Backlog to use this feature.",
@@ -1314,12 +1594,30 @@ function createNewSetupProfile() {
   runner.runArgs = "";
   selectedProjectRoot.value = "";
   
-  const baseName = `Setup ${setupProfiles.value.length + 1}`;
+  // Clear Backlog issue links for a fresh start
+  runner.backlogIssueKey = "";
+  runner.backlogIssueSummary = "";
+  runner.backlogIssueTypeId = undefined;
+  issueSearchQuery.value = "";
+  showIssueSearch.value = false;
+  
+  const nextNum = (() => {
+    const nums = setupProfiles.value
+      .filter(p => p.owner === currentUser.value)
+      .map(p => {
+        const match = p.name.match(/^Setup\s+(\d+)/i);
+        return match ? parseInt(match[1]) : 0;
+      });
+    return Math.max(0, ...nums) + 1;
+  })();
+  const baseName = `Setup ${nextNum}`;
   const setup = buildSetupFromRunner(baseName);
   setupProfiles.value.push(setup);
   selectedSetupId.value = setup.id;
   saveSetupsForCurrentRoot();
-  startEditingProfileName();
+  preventAutoSearch.value = true;
+  focusProfileName();
+  setTimeout(() => { preventAutoSearch.value = false; }, 300);
 }
 
 async function deleteSelectedSetupProfile() {
@@ -1350,6 +1648,79 @@ async function deleteSelectedSetupProfile() {
     } catch (e) {
       console.error("Failed to delete profile from server", e);
     }
+  }
+}
+
+async function exportProfileToDoc() {
+  if (!selectedProfile.value) return;
+  const p = selectedProfile.value;
+  
+  const content = `# Profile: ${p.name}
+> Exported from BSN iSync on ${new Date().toLocaleString()}
+
+## 1. General Configuration
+- **Owner**: ${p.owner}
+- **Workspace**: ${runner.workspaceRoot || 'Not Set'}
+- **Project Root**: ${p.projectRoot}
+- **Startup Project**: ${p.startupProject}
+- **Target Executable**: ${p.aliasExeName || 'Direct .exe'}
+
+## 2. Execution Logic
+- **Build Configuration**: ${p.buildConfig}
+- **Runner Arguments**: \`${p.runArgs || '(empty)'}\`
+- **Test (BAT) File**: \`${p.batFilePath || '(empty)'}\`
+- **Deploy Path (Override)**: \`${p.deployPath || '(default)'}\`
+
+## 3. Database Connection
+- **Server**: \`${p.sqlServer || '(default)'}\`
+- **Database**: \`${p.sqlDatabase || '(default)'}\`
+- **Authentication**: ${p.useWindowsAuth ? 'Windows Authentication' : `SQL User: ${p.sqlUser || '???'}`}
+
+## 4. Configuration Templates
+### Default Config Template
+\`\`\`xml
+${p.configTemplate || '(default)'}
+\`\`\`
+
+${p.runConfigTemplate ? `### Run Config Template
+\`\`\`xml
+${p.runConfigTemplate}
+\`\`\`
+` : ''}
+
+## 5. SQL Scripts (${p.sqlSnippets?.length || 0})
+${(p.sqlSnippets || []).map((s, i) => `
+### Step ${i + 1}: ${s.name}
+\`\`\`sql
+${s.content}
+\`\`\`
+`).join('\n')}
+
+---
+*Document generated by BSN iSync - Modernizing Workflow.*
+`;
+
+  try {
+    const path = await save({
+      filters: [{ name: 'Markdown Documentation', extensions: ['md'] }],
+      defaultPath: `${p.name.replace(/[^a-z0-9]/gi, '_')}_Guide.md`
+    });
+
+    if (path) {
+      await writeTextFile(path, content);
+      toast.success("Documentation exported successfully!", {
+        description: `Saved to: ${path.split('\\').pop()}`,
+        action: {
+          label: 'Open File',
+          onClick: () => invoke('open_file', { path })
+        }
+      });
+    }
+  } catch (err) {
+    console.error(err);
+    toast.error("Export failed", {
+      description: String(err)
+    });
   }
 }
 
@@ -1461,12 +1832,17 @@ function applySelectedProject() {
   if (!selected) {
     return;
   }
-  runner.projectRoot = selected.root;
+  
+  // selected.root is ABSOLUTE from discover_projects
+  runner.projectRoot = normalizePath(selected.root);
   if (selected.startupProject) {
     runner.startupProject = selected.startupProject;
   }
+  
   // Sync PTY terminal location
-  invoke("pty_write", { id: "main", data: `cd '${selected.root}'\r` }).catch(() => {});
+  invoke("pty_write", { id: "main", data: `cd '${runner.projectRoot}'\r` }).catch(() => {});
+  
+  loadConfigsForCurrentProject();
 }
 
 async function runDotnetAndCollect(mode: "restore" | "build") {
@@ -1545,6 +1921,8 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
         sqlPassword: runner.sqlPassword || null,
         sqlUseWindowsAuth: runner.useWindowsAuth,
         runArgs: resolveArgs(runner.runArgs),
+        deployPath: runner.deployPath || null,
+        runConfigTemplate: runner.runConfigTemplate || null,
       },
     });
     
@@ -1596,6 +1974,45 @@ async function browseBatFile() {
   const picked = await invoke("pick_file", { defaultPath: defaultDir }) as string | null;
   if (picked) {
     runner.batFilePath = picked;
+    
+    // Auto-fill EXE Name if it is currently empty based on chosen bat file
+    if (!runner.aliasExeName.trim()) {
+      const filenameMatch = picked.match(/[^\\/]+$/);
+      if (filenameMatch) {
+        runner.aliasExeName = filenameMatch[0].replace(/\.[^/.]+$/, "") + ".exe";
+      }
+    }
+  }
+}
+
+
+async function loadConfigsForCurrentProject() {
+  if (!runner.projectRoot || !runner.startupProject) return;
+  
+  try {
+    const targetContent = await invoke("fetch_project_config", {
+      projectRoot: runner.projectRoot,
+      startupProject: runner.startupProject,
+    }).catch(e => { console.warn("Failed to fetch target config", e); return null; });
+    
+    if (targetContent) {
+        runner.configTemplate = targetContent as string;
+    }
+    
+    const runContent = await invoke("fetch_project_config", {
+      projectRoot: "D:\\workspace\\invoice\\Arkbell.Console\\Arkbell.Console.ReceiveBatchAction",
+      startupProject: "Arkbell.Console.ReceiveBatchAction.csproj",
+    }).catch(e => { console.warn("Failed to fetch run config", e); return null; });
+
+    if (runContent) {
+      runner.runConfigTemplate = runContent as string;
+    }
+    
+    // Run the sync template substitution on the newly loaded fresh contents
+    applyConfigSyncToTemplates();
+    
+  } catch (e: any) {
+    console.error("Auto-sync configs failed:", e);
   }
 }
 
@@ -1614,7 +2031,7 @@ async function runSqlOnly() {
   }
   if (!runner.sqlSetupPath || !runner.sqlSetupPath.trim()) {
     toast.error("Missing SQL content", {
-      description: "Please enter .sql file path or SQL code directly in the box below."
+      description: "Please enter SQL code directly in the box below."
     });
     return;
   }
@@ -1630,8 +2047,8 @@ async function runSqlOnly() {
     sqlPath = await invoke("prepare_sql_temp_file", { content: input }) as string;
     deleteCmd = `; del -Force "${sqlPath}"`;
 
-    // Use chcp 65001 to ensure terminal handles UTF-8 correctly
-    let cmd_str = `chcp 65001 > $null; sqlcmd -f 65001 -S "${runner.sqlServer}" -d "${runner.sqlDatabase}" -E`;
+    let authParams = runner.useWindowsAuth ? "-E" : `-U "${runner.sqlUser}" -P "${runner.sqlPassword}"`;
+    let cmd_str = `chcp 65001 > $null; sqlcmd -f 65001 -S "${runner.sqlServer}" -d "${runner.sqlDatabase}" ${authParams}`;
     cmd_str += ` -i "${sqlPath}"${deleteCmd}\r\n`;
 
     // Write to main terminal so user can see output
@@ -1639,6 +2056,95 @@ async function runSqlOnly() {
     await invoke("pty_write", { id: "main", data: cmd_str });
   } catch (e: any) {
     toast.error(String(e));
+  }
+}
+
+async function runAllSqlSnippets() {
+  if (!runner.sqlServer?.trim()) {
+    toast.error("Please enter SQL Server");
+    return;
+  }
+  if (!runner.sqlDatabase?.trim()) {
+    toast.error("Please enter Database name");
+    return;
+  }
+  if (!runner.useWindowsAuth && (!runner.sqlUser?.trim() || !runner.sqlPassword?.trim())) {
+    toast.error("Please enter SQL Username/Password");
+    return;
+  }
+  if (runner.sqlSnippets.length === 0) {
+    toast.error("No SQL Scripts found to run.");
+    return;
+  }
+
+  let combinedSql = "";
+  for (const snippet of runner.sqlSnippets) {
+    if (snippet.content.trim()) {
+      combinedSql += `\r\nPRINT '----------------------------------------'\r\n`;
+      combinedSql += `PRINT '--- Executing: ${snippet.name.replace(/'/g, "''")} ---'\r\n`;
+      combinedSql += `PRINT '----------------------------------------'\r\nGO\r\n`;
+      combinedSql += snippet.content.trim() + `\r\nGO\r\n`;
+    }
+  }
+
+  if (!combinedSql.trim()) {
+    toast.info("All scripts are empty.");
+    return;
+  }
+
+  try {
+    let sqlPath = await invoke("prepare_sql_temp_file", { content: combinedSql }) as string;
+    let deleteCmd = `; del -Force "${sqlPath}"`;
+
+    let authParams = runner.useWindowsAuth ? "-E" : `-U "${runner.sqlUser}" -P "${runner.sqlPassword}"`;
+    let cmd_str = `chcp 65001 > $null; sqlcmd -f 65001 -S "${runner.sqlServer}" -d "${runner.sqlDatabase}" ${authParams}`;
+    cmd_str += ` -i "${sqlPath}"${deleteCmd}\r\n`;
+
+    termState.active = 'main';
+    await invoke("pty_write", { id: "main", data: cmd_str });
+    
+    toast.success("Executing All Scripts", { description: "Check terminal for output." });
+  } catch (e: any) {
+    toast.error("Execution failed", { description: String(e) });
+  }
+}
+
+function onSnippetSelected(id: string | null) {
+  if (!id) return;
+  const snippet = runner.sqlSnippets.find(s => s.id === id);
+  if (snippet) {
+    runner.sqlSetupPath = snippet.content;
+  }
+}
+
+function updateActiveSnippetContent(e: Event) {
+  const target = e.target as HTMLTextAreaElement;
+  const content = target.value;
+  const snippet = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
+  if (snippet) {
+    snippet.content = content;
+  }
+}
+
+function createNewSqlSnippet() {
+  startNamingSqlSnippet('create');
+}
+
+function renameActiveSqlSnippet() {
+  startNamingSqlSnippet('rename');
+}
+
+function deleteActiveSqlSnippet() {
+  const idx = runner.sqlSnippets.findIndex(s => s.id === runner.activeSqlSnippetId);
+  if (idx === -1) return;
+  if (!confirm(`Delete SQL script "${runner.sqlSnippets[idx].name}"?`)) return;
+  runner.sqlSnippets.splice(idx, 1);
+  if (runner.sqlSnippets.length > 0) {
+    runner.activeSqlSnippetId = runner.sqlSnippets[0].id;
+    runner.sqlSetupPath = runner.sqlSnippets[0].content;
+  } else {
+    runner.activeSqlSnippetId = "";
+    runner.sqlSetupPath = "";
   }
 }
 
@@ -1656,15 +2162,6 @@ async function checkEnv() {
     console.error("Failed to check environment:", e);
   }
 }
-
-const isRecordingShortcut = ref(false);
-const shortcutContainerRef = ref<HTMLElement | null>(null);
-
-onClickOutside(shortcutContainerRef, () => {
-  if (isRecordingShortcut.value) {
-    stopRecordingShortcut();
-  }
-});
 
 function formatTauriShortcut(e: KeyboardEvent): string {
   const modifiers = [];
@@ -1692,15 +2189,17 @@ function formatTauriShortcut(e: KeyboardEvent): string {
   return [...modifiers, key].join('+');
 }
 
-async function startRecordingShortcut() {
+async function startRecordingShortcut(action: string) {
   if (isRecordingShortcut.value) return;
   isRecordingShortcut.value = true;
+  recordingAction.value = action;
   window.addEventListener("keydown", handleShortcutKeydown, true);
-  toast.info("Recording shortcut... Press keys to record.", { duration: 3000 });
+  toast.info(`Recording shortcut... Press any combination for ${action.toUpperCase()}`, { duration: 4000 });
 }
 
 function stopRecordingShortcut() {
   isRecordingShortcut.value = false;
+  recordingAction.value = null;
   window.removeEventListener("keydown", handleShortcutKeydown, true);
 }
 
@@ -1708,20 +2207,29 @@ async function handleShortcutKeydown(e: KeyboardEvent) {
   e.preventDefault();
   e.stopPropagation();
 
+  // Esc to cancel recording
+  if (e.key === 'Escape') {
+    stopRecordingShortcut();
+    toast.info("Recording cancelled");
+    return;
+  }
+
   if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
 
   const shortcut = formatTauriShortcut(e);
-  if (shortcut) {
-    const oldShortcut = runner.shortcut;
-    runner.shortcut = shortcut;
+  if (shortcut && recordingAction.value) {
+    const action = recordingAction.value;
+    const oldShortcut = runner.shortcuts[action];
+    runner.shortcuts[action] = shortcut;
     stopRecordingShortcut();
     
-    await updateGlobalShortcut(shortcut, oldShortcut);
-    toast.success(`Shortcut set to: ${shortcut}`);
+    await updateGlobalShortcut(action, shortcut, oldShortcut);
+    toast.success(`${action.toUpperCase()} set to: ${shortcut}`);
+    saveUIState();
   }
 }
 
-async function updateGlobalShortcut(newShortcut: string, oldShortcut?: string) {
+async function updateGlobalShortcut(action: string, newShortcut: string, oldShortcut?: string) {
   try {
     if (oldShortcut && await isRegistered(oldShortcut)) {
       await unregisterShortcut(oldShortcut);
@@ -1729,9 +2237,15 @@ async function updateGlobalShortcut(newShortcut: string, oldShortcut?: string) {
     if (newShortcut) {
       await registerShortcut(newShortcut, (event: any) => {
         if (event.state === 'Pressed') {
-          console.log(`Shortcut ${newShortcut} triggered`);
-          notify('BSN iSync', `Test started via shortcut (${newShortcut})`);
-          dotnet('run', 'bat');
+          console.log(`Shortcut ${newShortcut} triggered for action: ${action}`);
+          switch(action) {
+            case 'test': dotnet('run', 'bat'); break;
+            case 'run': dotnet('run', 'exe'); break;
+            case 'build': dotnet('build'); break;
+            case 'rebuild': rebuild(); break;
+            case 'stop': stop(); break;
+          }
+          notify('BSN iSync', `${action.toUpperCase()} triggered via shortcut`);
         }
       });
     }
@@ -1757,22 +2271,35 @@ async function notify(title: string, body: string) {
   }
 }
 
-function clearShortcut() {
-  const old = runner.shortcut;
-  runner.shortcut = "";
-  if (old) {
-    unregisterShortcut(old).catch(() => {});
+async function registerAllShortcuts() {
+  for (const [action, shortcut] of Object.entries(runner.shortcuts)) {
+    if (shortcut) {
+      await updateGlobalShortcut(action, shortcut);
+    }
   }
-  toast.success("Shortcut cleared");
 }
 
-function resetShortcutToDefault() {
-  const defaultShortcut = "Alt+Shift+M";
-  if (runner.shortcut === defaultShortcut) return;
-  const old = runner.shortcut;
-  runner.shortcut = defaultShortcut;
-  void updateGlobalShortcut(defaultShortcut, old);
-  toast.success(`Shortcut reset to: ${defaultShortcut}`);
+async function unregisterAllShortcuts() {
+  for (const shortcut of Object.values(runner.shortcuts)) {
+    if (shortcut && await isRegistered(shortcut)) {
+      await unregisterShortcut(shortcut);
+    }
+  }
+}
+
+async function resetAllShortcuts() {
+  const defaults = { 
+    test: 'Alt+Shift+T', 
+    run: 'Alt+Shift+R', 
+    build: 'Alt+Shift+B', 
+    rebuild: 'Alt+Shift+U', 
+    stop: 'Alt+Shift+S' 
+  };
+  await unregisterAllShortcuts();
+  Object.assign(runner.shortcuts, defaults);
+  await registerAllShortcuts();
+  saveUIState();
+  toast.success('All shortcuts reset to defaults');
 }
 
 async function initPty(id: 'main' | 'run', container: HTMLElement) {
@@ -1827,6 +2354,9 @@ onMounted(async () => {
 
   // 2. Load UI state and Backlog login status from store
   await loadUIState();
+  
+  // Initialize Global Shortcuts
+  await registerAllShortcuts();
 
   // 3. Load Project Profiles
   await loadSetupsForCurrentRoot();
@@ -1855,6 +2385,11 @@ onMounted(async () => {
   } catch (e: any) {}
 
   await loadBacklogProjects();
+  
+  // 7. Initial sync with cloud to pull shared profiles
+  if (backlog.token?.access_token) {
+    triggerSync();
+  }
   
   if (backlog.status === 'idle' && backlog.token?.access_token) {
      void fetchBacklogProfileWithToken({
@@ -1940,14 +2475,25 @@ onMounted(async () => {
   if (mainTermRef.value) ro.observe(mainTermRef.value);
   if (runTermRef.value) ro.observe(runTermRef.value);
 
-  backlogRefreshInterval = window.setInterval(() => {
+  // 8. Register all shortcuts
+  await registerAllShortcuts();
+
+  backlogRefreshInterval = window.setInterval(async () => {
     if (backlog.token) {
-      ensureValidBacklogToken();
+      await ensureValidBacklogToken();
     }
   }, 2 * 60 * 1000); // Check every 2 minutes
+
+  // Initial Startup Sync - Only call triggerSync if authenticated. 
+  // It handles the full pull internally.
+  if (backlog.token?.access_token) {
+    console.log("[Setup] Starting initial cloud sync...");
+    triggerSync();
+  }
 });
 
 onUnmounted(() => {
+  unregisterAllShortcuts();
   if (backlogRefreshInterval) window.clearInterval(backlogRefreshInterval);
   if (unlistenRunnerLog) unlistenRunnerLog();
   if (unlistenBuildStatus) unlistenBuildStatus();
@@ -1957,7 +2503,7 @@ onUnmounted(() => {
 
 <template>
   <div class="min-h-screen bg-background bg-[radial-gradient(ellipse_at_top_right,var(--tw-gradient-stops))] from-primary/5 via-background to-background text-foreground overflow-x-hidden selection:bg-primary/20">
-    <header class="border-b border-black/5 dark:border-white/5 bg-card/60 backdrop-blur-xl sticky top-0 z-50 shadow-sm">
+    <header class="border-b border-black/5 dark:border-white/5 bg-card sticky top-0 z-50 shadow-sm transition-all duration-300">
       <div class="px-6 py-1.5 flex items-center justify-between">
         <div class="flex items-center gap-2">
           <div class="h-7 w-7 rounded-md bg-primary text-primary-foreground grid place-items-center text-xs font-semibold">IS</div>
@@ -2055,6 +2601,7 @@ onUnmounted(() => {
             </Button>
           </template>
 
+
           <Button @click="toggleTheme" variant="ghost" size="icon" class="h-7 w-7 transition-all hover:bg-accent ring-primary/20">
             <Moon v-if="!dark" class="size-4" />
             <Sun v-else class="size-4 text-yellow-500" />
@@ -2070,6 +2617,16 @@ onUnmounted(() => {
             <div v-if="isNotificationEnabled" class="absolute top-1 right-1 size-1.5 bg-primary rounded-full ring-2 ring-background animate-pulse"></div>
           </Button>
 
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            class="h-8 w-8 transition-all hover:bg-zinc-100 dark:hover:bg-white/5 rounded-lg group/hk-gl relative" 
+            title="Manage Global Hotkeys"
+            @click="showHotkeySettings = true"
+          >
+            <Keyboard class="size-4 text-muted-foreground group-hover/hk-gl:text-primary transition-colors" />
+          </Button>
+
           <div class="h-4 w-px bg-border mx-1"></div>
         </div>
       </div>
@@ -2077,7 +2634,7 @@ onUnmounted(() => {
 
     <main class="h-[calc(100vh-61px)] flex flex-col px-0 pb-4 pt-2">
       <Tabs v-model="activeTab" class="flex-1 flex flex-col min-h-0">
-        <div class="mx-6 mb-2 flex items-center justify-start gap-4 bg-card/40 p-2.5 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-none ring-1 ring-black/5 dark:ring-white/5 backdrop-blur-xl">
+        <div class="mx-6 mb-2 flex items-center justify-start gap-4 bg-card p-2.5 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-none ring-1 ring-black/5 dark:ring-white/5 outline-none">
           
           <div class="flex items-center gap-2 w-full max-w-xl bg-muted/30 rounded-xl p-1.5 transition-all focus-within:bg-muted/50 ring-1 ring-transparent focus-within:ring-primary/20">
             <div class="flex items-center gap-2 flex-1 min-w-0 px-2">
@@ -2094,67 +2651,48 @@ onUnmounted(() => {
               </Button>
             </div>
           </div>
-
-            <!-- Enhanced Premium Global Shortcut UI -->
-            <div ref="shortcutContainerRef" class="flex items-center gap-3 bg-white dark:bg-zinc-900/80 rounded-2xl p-1.5 border border-zinc-200 dark:border-white/10 shadow-lg dark:shadow-2xl backdrop-blur-md group/shortcut-container ml-2 ring-1 ring-black/5 dark:ring-white/5">
-              <div class="flex items-center gap-1.5 px-2.5 py-1 bg-primary text-primary-foreground rounded-lg shadow-sm shrink-0 shadow-primary/20">
-                  <Beaker class="size-3" :class="isRecordingShortcut ? 'animate-pulse' : ''" />
-                  <span class="text-[9px] font-black uppercase tracking-widest">{{ isRecordingShortcut ? 'Recording' : 'Hotkey' }}</span>
-              </div>
-
-              <div class="flex items-center gap-1 min-w-[140px] justify-center">
-                <template v-if="runner.shortcut && !isRecordingShortcut">
-                   <div v-for="(part, i) in runner.shortcut.split('+')" :key="i" class="flex items-center gap-0.5">
-                      <span v-if="i > 0" class="text-[8px] font-black text-muted-foreground/30 px-0.5">+</span>
-                      <kbd class="px-2 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-white/10 text-[10px] font-mono font-black text-zinc-800 dark:text-zinc-200 shadow-[0_2px_0_var(--color-zinc-300)] dark:shadow-[0_2px_0_var(--color-zinc-950)] leading-none uppercase select-none transition-transform group-hover/hotkey:-translate-y-0.5">{{ part }}</kbd>
-                   </div>
-                </template>
-                <span v-else-if="isRecordingShortcut" class="text-[10px] font-black text-primary animate-pulse tracking-widest">PRESS KEYS...</span>
-                <span v-else class="text-[10px] font-bold text-muted-foreground/40 italic">None Set</span>
-              </div>
-
-              <div class="flex items-center gap-0.5 border-l border-white/10 pl-1">
-                <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all scale-90 hover:scale-100" title="Record New Shortcut" @click="startRecordingShortcut" :disabled="backlog.status !== 'success'">
-                  <Pencil class="size-3" />
-                </Button>
-                <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-amber-500/10 text-muted-foreground hover:text-amber-500 transition-all scale-90 hover:scale-100" title="Reset to Default (Alt+Shift+T)" @click="resetShortcutToDefault" :disabled="backlog.status !== 'success'">
-                  <RotateCcw class="size-3" />
-                </Button>
-                <Button v-if="runner.shortcut" variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all scale-90 hover:scale-100" title="Clear Shortcut" @click="clearShortcut" :disabled="backlog.status !== 'success'">
-                  <Trash2 class="size-3" />
-                </Button>
-              </div>
-            </div>
-          </div>
+        </div>
 
         <TabsContent value="runner" class="flex-1 min-h-0 m-0 border-0 p-0 outline-none">
           <section class="flex h-full gap-4 items-stretch overflow-hidden">
-            <div ref="mainScrollRef" class="w-[55%] min-h-0 flex flex-col gap-6 pt-2 pl-6 pr-4 pb-0 overflow-hidden">
-              <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 ring-1 ring-black/5 dark:ring-white/10 overflow-hidden backdrop-blur-2xl">
-                <div class="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+            <div ref="mainScrollRef" class="w-[58%] min-h-0 flex flex-col gap-6 pt-2 pl-6 pr-4 pb-0 overflow-hidden">
+              <section class="rounded-3xl bg-card/98 flex-1 flex flex-col min-h-0 ring-1 ring-black/5 dark:ring-white/10 overflow-hidden shadow-sm transition-all duration-300">
+                <div class="px-4 py-3 border-b border-primary/5 flex items-center justify-between bg-muted/20">
                   <div class="flex items-center gap-3">
-                    <div class="text-[13px] font-bold tracking-tight">Project Profile</div>
+                    <div class="text-[13px] font-black tracking-tight uppercase flex items-center gap-2">
+                       <Layers class="size-4 text-primary" /> PROFILES
+                    </div>
                     <div v-if="selectedProfile && selectedProfile.owner" class="text-[9px] px-2 py-0.5 rounded-full bg-muted font-medium uppercase tracking-tighter">{{ selectedProfile.owner }}</div>
                     
                     <!-- Professional Profile Sync Status -->
-                    <div v-if="selectedProfile && selectedProfile.owner === currentUser" 
-                         class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-tighter transition-all"
-                         :class="syncStatus === 'saving' ? 'bg-amber-500/10 text-amber-500' : syncStatus === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-500'">
-                      <RefreshCw v-if="syncStatus === 'saving'" class="size-2.5 animate-spin" />
-                      <Cloud v-else class="size-2.5" />
-                      <span>{{ syncStatus === 'saving' ? 'Cloud Syncing...' : syncStatus === 'error' ? 'Sync Error' : 'Cloud Protected' }}</span>
+                    <div v-if="selectedProfile && selectedProfile.owner === currentUser" class="flex items-center gap-1">
+                      <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-tighter transition-all"
+                           :class="syncStatus === 'saving' ? 'bg-amber-500/10 text-amber-500' : syncStatus === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-500'">
+                        <RefreshCw v-if="syncStatus === 'saving'" class="size-2.5 animate-spin" />
+                        <Cloud v-else class="size-2.5" />
+                        <span>{{ syncStatus === 'saving' ? 'Cloud Syncing...' : syncStatus === 'error' ? 'Sync Error' : 'Cloud Protected' }}</span>
+                      </div>
+                      <Button v-if="syncStatus !== 'saving'" 
+                              variant="ghost" 
+                              size="icon" 
+                              class="h-5 w-5 rounded-full hover:bg-muted text-muted-foreground/30 hover:text-primary transition-all p-0" 
+                              title="Refresh from Cloud" 
+                              @click="() => syncProfilesWithCloudflare()">
+                        <RefreshCw class="size-2.5" />
+                      </Button>
                     </div>
                   </div>
                   <Button 
-                    variant="secondary" 
+                    variant="default" 
                     size="sm" 
-                    class="h-8 px-3 font-bold relative group/create shrink-0" 
-                    :disabled="runner.running" 
+                    class="h-8 px-3.5 font-black uppercase text-[10px] tracking-widest relative group/create shrink-0 shadow-sm transition-all bg-primary/90 hover:bg-primary" 
+                    :disabled="runner.running || backlog.status !== 'success'" 
                     @click="createNewSetupProfile"
                   >
-                    <Plus class="size-3.5 mr-1" /> Create
+                    <FilePlus2 class="size-3.5 mr-1.5 opacity-80" /> NEW PROFILE
                   </Button>
                 </div>
+
                 
                 <div class="p-4 flex-1 overflow-hidden">
                   <div class="grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] gap-4 h-full">
@@ -2218,6 +2756,7 @@ onUnmounted(() => {
                             <Search class="absolute left-2.5 top-2.5 size-4 text-muted-foreground opacity-50" />
                             <Input v-model="profileSearch" placeholder="Search profiles..." :disabled="runner.running" class="pl-9 h-9 text-[11px]" />
                           </div>
+
                         </div>
 
                       <div class="flex-1 overflow-y-auto px-1 pb-2 space-y-1.5 custom-scrollbar">
@@ -2232,7 +2771,7 @@ onUnmounted(() => {
                                 ]"
                                 @click="selectedSetupId = setup.id">
                             <div class="flex items-center justify-between w-full mb-1">
-                              <div class="text-[13px] font-bold leading-tight text-foreground/90 group-hover/item:text-primary transition-colors break-words">{{ setup.name }}</div>
+                              <div class="text-[13px] font-bold leading-tight text-foreground/90 group-hover/item:text-primary transition-colors wrap-break-word">{{ setup.name }}</div>
                               <div class="flex items-center gap-1.5 opacity-40 group-hover/item:opacity-100 transition-opacity">
                                 <!-- Cloud Icon for owned profiles -->
                                 <Cloud v-if="setup.owner === currentUser" 
@@ -2247,7 +2786,13 @@ onUnmounted(() => {
                             <div class="flex items-center gap-1.5 overflow-hidden">
                               <div class="h-1.5 w-1.5 rounded-full bg-primary/40 group-hover/item:bg-primary transition-colors shrink-0"></div>
                               <div class="text-[10px] text-muted-foreground truncate font-medium tracking-tight opacity-70 group-hover/item:opacity-100 transition-opacity">
-                                {{ discoveredProjects.find(p => p.root === setup.projectRoot)?.name || setup.projectRoot?.split('\\').pop() || "No project selected" }}
+                                {{ (() => {
+                                  const ws = (runner.workspaceRoot || "").replace(/[\\/]$/, "");
+                                  const fullRoot = setup.projectRoot ? `${ws}\\${setup.projectRoot}` : "";
+                                  const normFull = fullRoot.replace(/\//g, "\\").toLowerCase();
+                                  const found = discoveredProjects.find(p => (p.root || "").replace(/\//g, "\\").toLowerCase() === normFull);
+                                  return found?.name || setup.projectRoot?.split('\\').pop() || "No project selected";
+                                })() }}
                               </div>
                             </div>
                         </button>
@@ -2256,43 +2801,38 @@ onUnmounted(() => {
 
                     <!-- Right Column: Detail Form -->
                     <div class="flex flex-col gap-4 border-l border-white/5 pl-4 overflow-y-auto custom-scrollbar">
-                      <div class="flex items-center justify-between pb-2 border-b border-white/5">
+                      <div class="flex items-start justify-between gap-4 pb-3 border-b border-primary/5">
                         <div class="min-w-0 flex-1 relative">
-                          <template v-if="isEditingProfileName">
-                            <div class="relative group/identity flex flex-col gap-1.5 animate-in fade-in slide-in-from-top-2 duration-300">
+                          <template v-if="selectedProfile">
+                            <div ref="issueSearchContainerRef" class="relative group/identity flex flex-col pt-1 animate-in fade-in slide-in-from-top-2 duration-300">
                               <div class="flex items-center gap-2">
-                                <div class="relative flex-1 flex items-center bg-card border border-primary/20 rounded-2xl px-1.5 focus-within:ring-2 focus-within:ring-primary/20 shadow-sm transition-all group-focus-within/identity:border-primary/40">
+                                <div class="relative flex-1 flex items-center bg-transparent border-b-2 border-transparent pb-0.5 rounded-none px-0 transition-all"
+                                     :class="[!isNamingSqlSnippet ? 'focus-within:border-primary/50' : '']">
                                   <Input 
                                     ref="profileNameInput" 
                                     v-model="editableProfileName" 
-                                    class="font-black h-10 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-[15px] px-2.5 flex-1 min-w-0" 
+                                    class="font-black h-10 border-0 bg-transparent focus-visible:ring-0 px-2 -ml-2 transition-all rounded-md text-xl flex-1 min-w-0 cursor-text shadow-none" 
                                     placeholder="Profile name or search issue..."
-                                    @focus="showIssueSearch = true"
+                                    :disabled="!canEditSelected"
+                                    @focus="() => { if (!preventAutoSearch) showIssueSearch = true; }"
+                                    @input="showIssueSearch = true"
+                                    @blur="commitProfileName"
                                     @keydown.enter="commitProfileName" 
                                   />
-                                  <div v-if="runner.backlogIssueKey" class="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-primary text-primary-foreground text-[9px] font-black shrink-0 mr-1 shadow-sm group/badge">
-                                    {{ runner.backlogIssueKey }}
-                                    <button @click.stop="unlinkBacklogIssue" class="hover:bg-white/20 rounded-full p-0.5 transition-colors opacity-60 group-hover/badge:opacity-100" title="Unlink issue">
+                                  <div v-if="runner.backlogIssueKey" class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 text-primary border border-primary/20 text-[9px] font-black shrink-0 shadow-sm mx-1 group/badge transition-all hover:bg-primary/20 max-w-[200px]">
+                                    <span class="truncate block w-full text-left" :title="runner.backlogIssueKey">{{ runner.backlogIssueKey }}</span>
+                                    <button @click.stop="unlinkBacklogIssue" 
+                                            class="hover:bg-primary/80 hover:text-primary-foreground rounded-full p-0.5 transition-colors opacity-60 group-hover/badge:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed" 
+                                            :disabled="!canEditSelected"
+                                            title="Unlink issue">
                                       <X class="size-2.5" />
                                     </button>
                                   </div>
-                                  <div class="flex items-center gap-1 shrink-0 p-1">
-                                    <a v-if="backlogIssueUrl" 
-                                       :href="backlogIssueUrl" 
-                                       target="_blank" 
-                                       class="p-1.5 rounded-lg hover:bg-primary/10 text-primary opacity-40 hover:opacity-100 transition-all"
-                                       title="Xem trên Backlog"
-                                       @click.stop>
-                                      <ExternalLink class="size-3.5" />
-                                    </a>
-                                  </div>
                                 </div>
-                                <Button variant="ghost" size="icon" class="h-10 w-10 rounded-2xl hover:bg-primary/5 border border-transparent hover:border-primary/10" @click="commitProfileName">
-                                  <Save class="size-5 text-primary opacity-60" />
-                                </Button>
                               </div>
+                              <span class="text-[9px] font-bold text-muted-foreground opacity-30 font-mono tracking-tighter mt-0.5 ml-0.5">ID: {{ selectedProfile.id }}</span>
 
-                              <!-- Unified Search Dropdown -->
+                              <!-- Unified Search Dropdown under Title -->
                               <div v-if="showIssueSearch && backlog.profile" 
                                    class="absolute top-12 left-0 w-full z-50 bg-card/95 backdrop-blur-xl border border-primary/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 origin-top">
                                 <div class="p-2 border-b border-white/5 bg-primary/5 flex items-center justify-between">
@@ -2309,138 +2849,157 @@ onUnmounted(() => {
                                   <button v-for="issue in filteredBacklogIssues.slice(0, 15)" :key="issue.id"
                                           class="w-full flex flex-col items-start p-2.5 rounded-xl transition-all hover:bg-primary/10 group/item text-left"
                                           @click="selectBacklogIssue(issue); showIssueSearch = false">
-                                    <div class="flex items-center gap-2 mb-0.5">
-                                      <div class="px-1.5 py-0.5 rounded bg-primary text-primary-foreground text-[8px] font-black shrink-0 shadow-sm">{{ issue.issueKey }}</div>
-                                      <span class="text-[11px] font-bold text-foreground group-hover/item:text-primary truncate">{{ issue.summary }}</span>
+                                    <div class="flex flex-col gap-1 items-start w-full min-w-0">
+                                      <div class="inline-flex max-w-[95%] h-5 px-1.5 rounded-[4px] border border-b-2 text-[10px] font-mono font-bold items-center justify-center uppercase tracking-normal bg-background shadow-xs transition-all active:translate-y-px active:border-b truncate" :title="issue.issueKey">
+                                        <span class="truncate block w-full">{{ issue.issueKey }}</span>  
+                                      </div>
+                                      <span class="text-[11px] font-bold text-foreground opacity-80 pl-0.5 block w-full truncate" :title="issue.summary">{{ issue.summary }}</span>
                                     </div>
-                                    <span class="text-[9px] text-muted-foreground opacity-60 pl-0.5">{{ issue.summary }}</span>
                                   </button>
-                                </div>
-                                <div class="p-2 bg-muted/30 border-t border-white/5 flex items-center justify-center">
-                                  <span class="text-[8px] text-muted-foreground opacity-40 italic">Results from project: {{ runner.backlogProjectKey }}</span>
                                 </div>
                               </div>
                             </div>
                           </template>
-                          <div v-else class="flex-1 flex flex-col gap-1 min-w-0">
-                            <button class="w-full text-left group/header flex flex-col gap-0.5" @click="startEditingProfileName">
-                              <div class="flex items-center gap-2">
-                                <span class="text-[16px] font-black tracking-tight leading-tight group-hover/header:text-primary transition-colors break-words">{{ selectedProfile?.name || 'No Profile Selected' }}</span>
-                                <Pencil v-if="canEditSelected" class="size-3.5 opacity-0 group-hover/header:opacity-40 transition-opacity shrink-0 translate-y-0.5" />
-                                <RefreshCw v-if="syncStatus === 'saving'" class="size-3.5 text-primary animate-spin ml-2" />
-                              </div>
-                              <div v-if="runner.backlogIssueKey" class="flex items-center gap-2 pl-4.5 mt-0.5">
-                                <div class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-muted text-muted-foreground/80 tracking-tighter">{{ runner.backlogIssueKey }}</div>
-                                <span class="text-[10px] text-muted-foreground font-medium opacity-60 break-words leading-tight">{{ runner.backlogIssueSummary }}</span>
-                                <a :href="backlogIssueUrl" target="_blank" @click.stop class="ml-auto p-1 rounded-md hover:bg-primary/5 text-primary opacity-0 group-hover/header:opacity-40 hover:opacity-100 transition-all">
-                                  <ExternalLink class="size-3" />
-                                </a>
-                              </div>
-                            </button>
-                          </div>
+                          <template v-else>
+                            <h2 class="text-xl font-black tracking-tight text-muted-foreground/40 mt-1">Select a Profile</h2>
+                          </template>
                         </div>
-                        <div class="flex items-center gap-1 ml-auto">
-                          <Dialog v-model:open="isShareDialogOpen">
-                            <DialogTrigger as-child>
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                class="h-8 w-8 rounded-xl text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all"
-                                title="Share Profile"
-                                :disabled="runner.running || !canEditSelected || !syncService"
-                                @click="isShareDialogOpen = true"
-                              >
-                                <Share2 class="size-4" />
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent class="sm:max-w-[425px] bg-background/95 backdrop-blur-2xl border-primary/10 rounded-3xl shadow-2xl">
-                              <DialogHeader>
-                                <DialogTitle class="text-[17px] font-black tracking-tight">Chia sẻ Profile</DialogTitle>
-                                <DialogDescription class="text-[12px] opacity-60">
-                                  Cấp quyền cho người dùng khác truy cập hoặc chỉnh sửa cấu hình này.
-                                </DialogDescription>
-                              </DialogHeader>
-                              <div class="grid gap-6 py-4">
-                                <div class="space-y-2">
-                                  <Label class="text-[10px] font-black uppercase tracking-widest opacity-60">ID Người dùng (Backlog ID)</Label>
-                                  <Input v-model="shareTargetUserId" placeholder="Nhập User ID người nhận..." class="h-10 rounded-xl bg-muted/20 border-primary/10 focus:ring-primary/20" />
-                                </div>
-                                <div class="space-y-2">
-                                  <Label class="text-[10px] font-black uppercase tracking-widest opacity-60">Quyền truy cập</Label>
-                                  <Select v-model="shareRole">
-                                    <SelectTrigger class="h-10 rounded-xl bg-muted/20 border-primary/10">
-                                      <SelectValue placeholder="Chọn quyền" />
-                                    </SelectTrigger>
-                                    <SelectContent class="rounded-xl border-primary/10">
-                                      <SelectItem value="editor" class="text-xs font-bold py-2.5">Chỉnh sửa (Editor)</SelectItem>
-                                      <SelectItem value="viewer" class="text-xs font-bold py-2.5">Chỉ xem (Viewer)</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                              </div>
-                              <DialogFooter class="sm:justify-end gap-2">
-                                <Button variant="ghost" class="h-10 rounded-xl px-6 font-bold uppercase tracking-widest text-[10px]" @click="isShareDialogOpen = false">Hủy</Button>
-                                <Button class="h-10 rounded-xl px-8 font-black uppercase tracking-widest text-[10px] shadow-lg shadow-primary/20" :disabled="!shareTargetUserId" @click="handleShare">Chia sẻ ngay</Button>
-                              </DialogFooter>
-                            </DialogContent>
-                          </Dialog>
+                        <div class="flex items-center gap-2 pt-1.5 shrink-0">
+                          <Button 
+                            v-if="backlogIssueUrl"
+                            variant="ghost" 
+                            size="icon" 
+                            class="h-8 w-8 rounded-lg hover:bg-primary/10 text-primary transition-all opacity-60 hover:opacity-100"
+                            title="View on Backlog"
+                            @click="() => { if (backlogIssueUrl) openUrl(backlogIssueUrl); }"
+                          >
+                            <ExternalLink class="size-4" />
+                          </Button>
 
                           <Button 
                             variant="ghost" 
                             size="icon" 
-                            class="h-8 w-8 rounded-xl text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
-                            title="Delete Profile"
+                            class="h-8 w-8 rounded-lg hover:bg-primary/10 text-primary transition-all opacity-60 hover:opacity-100"
+                            title="Export Documentation"
+                            @click="exportProfileToDoc"
+                          >
+                            <FileDown class="size-4" />
+                          </Button>
+                          
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            class="flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-destructive hover:text-destructive-foreground hover:bg-destructive/20 transition-all border border-destructive/20 font-black tracking-widest text-[9px] shadow-sm uppercase shrink-0"
+                            title="Delete this Profile"
                             :disabled="runner.running || !canEditSelected"
                             @click="deleteSelectedSetupProfile"
                           >
-                            <Trash2 class="size-4" />
+                            <Trash2 class="size-3.5 opacity-80" /> DELETE
                           </Button>
                         </div>
                       </div>
 
-                      <div class="space-y-6">
-                        <div class="space-y-1.5">
-                        <Label class="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Target Project</Label>
-                        <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject" :disabled="!canEditSelected">
-                          <SelectTrigger class="w-full h-9 bg-muted/20 border-input" :disabled="!canEditSelected">
-                            <div class="truncate max-w-full font-medium">
-                              <SelectValue placeholder="Scan projects to select...">
-                                {{ discoveredProjects.find(p => p.root === selectedProjectRoot)?.name }}
-                              </SelectValue>
-                            </div>
-                          </SelectTrigger>
-                          <SelectContent class="p-1">
-                            <div class="py-2 px-1">
-                              <div class="relative">
-                                <Search class="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground opacity-40" />
-                                <input v-model="projectSearch" 
-                                       class="w-full bg-background border border-input h-9 text-[11px] pl-9 pr-2 rounded-md focus:outline-none focus:ring-1 focus:ring-primary/20 placeholder:text-muted-foreground/50 transition-all font-medium" 
-                                       placeholder="Filter projects..."
-                                       @mousedown.stop
-                                       @keydown.stop />
-                              </div>
-                            </div>
-                            <div class="max-h-[250px] overflow-y-auto custom-scrollbar">
-                              <SelectItem v-for="item in filteredDiscoveredProjects" :key="item.root" :value="item.root">
-                                <div class="flex flex-col items-start gap-0.5">
-                                  <span class="text-xs font-bold">{{ item.name }}</span>
-                                  <span class="text-[9px] text-muted-foreground opacity-60 truncate max-w-[300px]">{{ item.root }}</span>
+                      <div class="space-y-6 pt-2">
+                        <div class="flex items-center justify-between mb-1.5 px-0.5">
+                          <Label class="text-[10px] text-muted-foreground uppercase tracking-widest font-bold flex items-center gap-1.5"><AppWindow class="size-3.5 text-primary opacity-80" /> Target Project</Label>
+                          
+                          <Dialog>
+                            <DialogTrigger as-child>
+                              <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all group/settings" title="Configuration & SQL Setup">
+                                <Settings2 class="size-4 group-hover/settings:rotate-90 transition-transform duration-500" />
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent class="max-w-6xl w-[90vw] h-[90vh] flex flex-col p-0 gap-0 overflow-hidden bg-card/95 backdrop-blur-2xl border-primary/20 shadow-2xl rounded-2xl">
+                              <DialogHeader class="px-6 py-4 border-b bg-muted/30">
+                                <div class="flex items-center gap-3">
+                                  <div class="p-2 rounded-xl bg-primary/10 text-primary">
+                                    <Settings2 class="size-5" />
+                                  </div>
+                                  <div>
+                                    <DialogTitle class="text-xl font-black uppercase tracking-tight">Project Configuration</DialogTitle>
+                                    <p class="text-[10px] font-bold text-muted-foreground uppercase tracking-widest opacity-50">SQL Setup & App.config Template</p>
+                                  </div>
                                 </div>
-                              </SelectItem>
-                            </div>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                              </DialogHeader>
+                              
+                              <div class="flex-1 overflow-hidden p-6">
+                                  <Tabs defaultValue="target" class="h-full flex flex-col gap-6">
+                                    <TabsList class="grid w-full grid-cols-2 h-10 p-1 bg-muted/50 rounded-xl">
+                                      <TabsTrigger value="target" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Target Config (Test)</TabsTrigger>
+                                      <TabsTrigger value="run" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Run Config (Exe)</TabsTrigger>
+                                    </TabsList>
+                                    
+                                    <TabsContent value="target" class="flex flex-col flex-1 min-h-0 mt-0 gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
+                                       <!-- 1. App.config Setup (Target/Test) -->
+                                       <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
+                                          <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
+                                            <div class="flex items-center gap-2">
+                                              <div class="size-2 rounded-full bg-blue-500"></div>
+                                              <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">App.config (Target Template)</Label>
+                                            </div>
+                                          </div>
+                                          <Textarea v-model="runner.configTemplate" 
+                                                    class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
+                                                    placeholder="<!-- XML Template content (for Test) -->" 
+                                                    :disabled="!canEditSelected" />
+                                       </div>
 
+                                    </TabsContent>
 
-                        <div class="space-y-1.5">
-                          <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">EXE Name</Label>
-                          <Input v-model="runner.aliasExeName" placeholder="App.exe" @blur="() => { if (runner.aliasExeName && !runner.aliasExeName.toLowerCase().endsWith('.exe')) { runner.aliasExeName += '.exe' } }" :disabled="!canEditSelected" />
+                                    <TabsContent value="run" class="flex flex-col flex-1 min-h-0 mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                                       <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
+                                          <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
+                                            <div class="flex items-center gap-2">
+                                              <div class="size-2 rounded-full bg-green-500"></div>
+                                              <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">App.config (Run Template)</Label>
+                                            </div>
+                                          </div>
+                                          <Textarea v-model="runner.runConfigTemplate" 
+                                                    class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
+                                                    placeholder="<!-- Run XML content -->" 
+                                                    :disabled="!canEditSelected" />
+                                       </div>
+                                    </TabsContent>
+                                  </Tabs>
+                              </div>
+                            </DialogContent>
+                          </Dialog>
                         </div>
+                            <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject" :disabled="!canEditSelected">
+                              <SelectTrigger class="w-full h-9 bg-muted/20 border-input" :disabled="!canEditSelected">
+                                <div class="truncate max-w-full font-medium text-xs">
+                                  <SelectValue placeholder="Scan projects to select...">
+                                    {{ discoveredProjects.find(p => p.root === selectedProjectRoot)?.name }}
+                                  </SelectValue>
+                                </div>
+                              </SelectTrigger>
+                              <SelectContent class="p-1">
+                                <div class="py-2 px-1">
+                                  <div class="relative">
+                                    <Search class="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground opacity-40" />
+                                    <input v-model="projectSearch" 
+                                           class="w-full bg-background border border-input h-9 text-[11px] pl-9 pr-2 rounded-md focus:outline-none focus:ring-1 focus:ring-primary/20 placeholder:text-muted-foreground/50 transition-all font-medium" 
+                                           placeholder="Filter projects..."
+                                           @mousedown.stop
+                                           @keydown.stop />
+                                  </div>
+                                </div>
+                                <div class="max-h-[250px] overflow-y-auto custom-scrollbar">
+                                  <SelectItem v-for="item in filteredDiscoveredProjects" :key="item.root" :value="item.root">
+                                    <div class="flex flex-col items-start gap-0.5">
+                                      <span class="text-xs font-bold">{{ item.name }}</span>
+                                      <span class="text-[9px] text-muted-foreground opacity-60 truncate max-w-[300px]">{{ item.root }}</span>
+                                    </div>
+                                  </SelectItem>
+                                </div>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
 
                         <div class="space-y-3">
                           <div class="space-y-1.5">
-                            <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">Test (BAT) File</Label>
+                            <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5 flex items-center gap-1.5"><TerminalSquare class="size-3.5 text-primary opacity-80" /> Test (BAT) File</Label>
                             <div class="flex gap-1.5 h-9">
                               <div class="flex-1 relative flex items-center">
                                 <Input v-model="runner.batFilePath" class="font-mono pr-8 h-full" :disabled="!canEditSelected" />
@@ -2449,230 +3008,359 @@ onUnmounted(() => {
                               <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile" :disabled="!canEditSelected"><FolderOpen class="size-4" /></Button>
                             </div>
                           </div>
-                          <div class="space-y-1.5">
-                            <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5">Arguments</Label>
+                          <div class="space-y-1.5 pb-2">
+                            <Label class="flex items-center gap-1 text-[9px] text-muted-foreground uppercase font-bold pl-0.5">
+                              BAT Arguments 
+                              <span class="opacity-50 normal-case tracking-normal font-medium text-[8.5px] lowercase">(passed to .bat during TEST)</span>
+                            </Label>
                             <div class="relative flex items-center group/args">
-                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-14 selection:bg-primary/30 selection:text-primary" :disabled="backlog.status !== 'success'" />
+                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-14 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
                               <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
-                                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="backlog.status !== 'success'">
+                                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="!canEditSelected">
                                   <Clock class="size-3" />
                                 </Button>
                               </div>
                             </div>
-                
                           </div>
+
+                          <div class="space-y-4 pb-2 border-t border-white/5 pt-3">
+                            <!-- Database Connection Setup -->
+                            <div class="space-y-2">
+                              <div class="flex items-center justify-between px-0.5">
+                                <div class="flex items-center gap-1.5">
+                                  <Database class="size-3.5 text-primary opacity-80" />
+                                  <Label class="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Database</Label>
+                                </div>
+                                <Button v-if="!canEditSelected && selectedSetupId && (isServerOverridden || isDatabaseOverridden)" 
+                                        variant="ghost" 
+                                        size="sm" 
+                                        class="h-4 px-1.5 text-[8px] font-black text-primary hover:bg-primary/10 transition-all uppercase tracking-tighter" 
+                                        @click="resetLocalOverrides(selectedSetupId)">
+                                  Reset to Shared
+                                </Button>
+                              </div>
+                              <div class="flex flex-col gap-1.5">
+                                <div class="relative flex items-center">
+                                  <Input v-model="runner.sqlServer" placeholder="Server Host (e.g. localhost\SQLEXPRESS)" class="h-8 text-[10px] bg-background/50 border-input font-mono pr-12 w-full" />
+                                  <div v-if="isServerOverridden" class="absolute right-2 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[7px] font-black uppercase tracking-tighter animate-in fade-in zoom-in duration-300">Local</div>
+                                </div>
+                                <div class="relative flex items-center">
+                                  <Input v-model="runner.sqlDatabase" placeholder="Initial Catalog (e.g. MyDatabase)" class="h-8 text-[10px] bg-background/50 border-input font-mono pr-12 w-full" />
+                                  <div v-if="isDatabaseOverridden" class="absolute right-2 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[7px] font-black uppercase tracking-tighter animate-in fade-in zoom-in duration-300">Local</div>
+                                </div>
+                              </div>
+                              <div class="flex items-center space-x-2 pt-1 pl-0.5">
+                                <Switch id="winAuth" v-model="runner.useWindowsAuth" :disabled="!canEditSelected" class="scale-75 origin-left" />
+                                <Label for="winAuth" class="text-[9px] font-bold text-muted-foreground uppercase tracking-widest cursor-pointer">Windows Auth</Label>
+                              </div>
+                              <div v-if="!runner.useWindowsAuth" class="flex gap-1.5 animate-in slide-in-from-top-2">
+                                <Input v-model="runner.sqlUser" placeholder="Username" class="h-8 flex-1 text-[10px] bg-background/50 border-input" :disabled="!canEditSelected" />
+                                <Input v-model="runner.sqlPassword" type="password" placeholder="Password" class="h-8 flex-1 text-[10px] bg-background/50 border-input" :disabled="!canEditSelected" />
+                              </div>
+                            </div>
+
+                            <!-- SQL Snippets & Execution -->
+                            <div class="space-y-1.5">
+                              <div class="flex items-center justify-between px-0.5 mb-1.5">
+                                <Label class="text-[9px] text-muted-foreground uppercase font-black tracking-widest flex items-center gap-1.5"><Code2 class="size-3.5 text-primary opacity-80" /> SQL Scripts</Label>
+                                <div class="flex gap-1.5">
+                                  <Button variant="ghost" size="sm" class="h-5 px-2 py-0 text-[8.5px] font-black tracking-widest text-[#FF7500] hover:bg-[#FF7500]/10 hover:text-[#FF7500] rounded-md shadow-sm border border-[#FF7500]/20 bg-[#FF7500]/5" title="Run All Scripts sequentially" @click="runAllSqlSnippets" :disabled="!canExecuteSelected || runner.sqlSnippets.length === 0">
+                                    <ListTree class="size-2.5 mr-1" /> RUN ALL
+                                  </Button>
+                                  <Button variant="ghost" size="sm" class="h-5 px-2 py-0 text-[8.5px] font-black tracking-widest text-primary hover:bg-primary/10 hover:text-primary rounded-md shadow-sm border border-primary/20 bg-primary/5" title="Run Current Script" @click="runSqlOnly" :disabled="!canExecuteSelected || runner.sqlSnippets.length === 0">
+                                    <Play class="size-2.5 mr-1" /> RUN
+                                  </Button>
+                                </div>
+                              </div>
+                              
+                              <div class="flex items-center gap-1.5 p-1.5 rounded-xl bg-muted/40 shadow-inner border border-primary/5">
+                                <Select v-model="runner.activeSqlSnippetId" @update:model-value="onSnippetSelected" :disabled="runner.sqlSnippets.length === 0">
+                                  <SelectTrigger class="h-8 flex-1 text-[10px] font-bold bg-background shadow-sm border-primary/10 rounded-lg hover:border-primary/30 transition-colors">
+                                    <SelectValue placeholder="No scripts found..." />
+                                  </SelectTrigger>
+                                  <SelectContent class="max-w-[250px] shadow-xl">
+                                    <SelectItem v-for="snippet in runner.sqlSnippets" :key="snippet.id" :value="snippet.id" class="text-[10px] font-medium py-2">
+                                      <div class="flex items-center gap-2">
+                                        <Code2 class="size-3.5 text-primary/70" />
+                                        <span>{{ snippet.name }}</span>
+                                      </div>
+                                    </SelectItem>
+                                  </SelectContent>
+                                </Select>
+
+                                <div class="w-px h-5 bg-border/80 mx-0.5"></div>
+
+                                <Button variant="outline" size="sm" class="h-8 px-3 rounded-lg border-primary/20 bg-primary/10 hover:bg-primary text-primary hover:text-primary-foreground shadow-sm transition-all focus:ring-2 focus:ring-primary/20 font-black tracking-widest text-[9px]" @click="createNewSqlSnippet" :disabled="!canEditSelected" title="Create a new query script">
+                                  <Plus class="size-3.5 mr-1.5" /> CREATE
+                                </Button>
+                                <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0 rounded-lg hover:bg-background shadow-xs text-muted-foreground transition-all" @click="renameActiveSqlSnippet" :disabled="!canEditSelected || runner.sqlSnippets.length === 0" title="Rename Script">
+                                  <Pencil class="size-3.5" />
+                                </Button>
+                                <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0 rounded-lg hover:bg-destructive shadow-xs hover:text-destructive-foreground text-destructive/80 transition-all" @click="deleteActiveSqlSnippet" :disabled="!canEditSelected || runner.sqlSnippets.length === 0" title="Delete Script">
+                                  <Trash2 class="size-3.5" />
+                                </Button>
+                              </div>
+
+                              <Textarea v-model="runner.sqlSetupPath" 
+                                        @input="updateActiveSnippetContent"
+                                        class="min-h-[200px] font-mono text-[10px] p-2.5 leading-relaxed bg-background/50 border-input focus:border-primary/30 rounded-lg resize-y custom-scrollbar mt-1.5" 
+                                        placeholder="-- Write SQL queries here..." 
+                                        :disabled="!canEditSelected || runner.sqlSnippets.length === 0" />
+                            </div>
+                          </div>
+
                         </div>
-                      </div>
                     </div>
                   </div>
                 </div>
               </section>
-
-              <section ref="configSectionRef" class="rounded-3xl bg-card/25 shadow-[0_15px_40px_rgba(0,0,0,0.03)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.25)] ring-1 ring-black/5 dark:ring-white/10 overflow-hidden transition-all duration-500 backdrop-blur-2xl shrink-0">
-                <button type="button" 
-                        @click="toggleConfig"
-                        class="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors group/collapsible text-left">
-                  <div class="flex items-center gap-2">
-                    <span class="text-sm font-semibold">Configuration & Database</span>
-                    <span v-if="isConfigCollapsed" class="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded opacity-60">Alias EXE + SQL Setup</span>
-                  </div>
-                  <component :is="isConfigCollapsed ? ChevronRight : ChevronDown" class="size-4 text-muted-foreground group-hover/collapsible:text-primary transition-colors" />
-                </button>
-                
-                <div v-show="!isConfigCollapsed" class="px-4 pb-4 border-t border-white/5 pt-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                  <Tabs defaultValue="sql" class="w-full">
-                    <TabsList class="grid w-full grid-cols-2 h-8 p-1 bg-muted/50 font-bold uppercase tracking-wider">
-                      <TabsTrigger value="sql" class="text-[10px] px-3">SQL Setup</TabsTrigger>
-                      <TabsTrigger value="config" class="text-[10px] px-3">Config Template</TabsTrigger>
-                    </TabsList>
-                    <TabsContent value="sql" class="mt-0 space-y-3">
-                      <div class="grid grid-cols-2 gap-3">
-                        <div class="space-y-1">
-                           <Label class="text-[10px] uppercase font-bold text-muted-foreground">Server</Label>
-                          <Input v-model="runner.sqlServer" placeholder="localhost\SQLEXPRESS" class="h-8 text-xs" :disabled="!canEditSelected" />
-                        </div>
-                        <div class="space-y-1">
-                          <Label class="text-[10px] uppercase font-bold text-muted-foreground">Database</Label>
-                          <Input v-model="runner.sqlDatabase" placeholder="MyDatabase" class="h-8 text-xs" :disabled="!canEditSelected" />
-                        </div>
-                      </div>
-
-                      <div class="flex items-center justify-end py-1">
-                        <Button variant="secondary" size="sm" class="h-8 text-[11px] font-bold px-4 transition-all hover:bg-primary hover:text-primary-foreground group" @click="runSqlOnly" :disabled="!canEditSelected">
-                          <Play class="size-3.5 mr-2 group-hover:animate-pulse" />
-                          Run SQL
-                        </Button>
-                      </div>
-
-                      <div class="space-y-1.5 pt-1">
-                        <div class="flex items-center justify-between">
-                          <Label class="text-[10px] uppercase font-bold text-muted-foreground">SQL Script / Query</Label>
-                        </div>
-                        <Textarea v-model="runner.sqlSetupPath" class="min-h-[200px] max-h-[400px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="Paste SQL code here (Supports Japanese/Vietnamese)..." :disabled="!canEditSelected" />
-                      </div>
-                    </TabsContent>
-                    <TabsContent value="config" class="mt-0 space-y-3">
-                      <div class="space-y-1.5 pt-1">
-                        <div class="flex items-center justify-between">
-                          <Label class="text-[10px] uppercase font-bold text-muted-foreground">App.config Template</Label>
-                          <span class="text-[9px] text-muted-foreground opacity-50 italic">Auto-syncs with EXE & BAT</span>
-                        </div>
-                        <Textarea v-model="runner.configTemplate" class="min-h-[200px] max-h-[500px] overflow-y-auto font-mono text-[11px] p-2 leading-relaxed" placeholder="XML Config Template..." :disabled="!canEditSelected" />
-                      </div>
-                    </TabsContent>
-                  </Tabs>
-
-                </div>
-              </section>
-
-
 
             </div>
 
             <div class="flex-1 h-full flex flex-col gap-4 min-w-0 pt-2 pr-6 pl-2 pb-0 overflow-hidden">
-
-
               <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl">
                 <!-- Header with Session Switcher -->
-    <div class="px-3 py-1.5 flex items-center justify-between border-b bg-muted/50">
-      <div class="flex items-center gap-2">
-        <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mr-2">Terminal</span>
-        
-        <div class="flex items-center gap-1 bg-background/50 p-0.5 rounded-md border shadow-inner" v-if="runner.running || termState.active === 'run'">
-          <button @click="termState.active = 'main'" 
-                  :class="termState.active === 'main' ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-                  class="px-2.5 py-0.5 rounded-sm text-[10px] font-bold transition-all uppercase tracking-tighter">
-            1 Shell
-          </button>
-          <button @click="termState.active = 'run'" 
-                  :class="termState.active === 'run' ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-                  class="px-2.5 py-0.5 rounded-sm text-[10px] font-bold transition-all uppercase tracking-tighter">
-            2 Output
-          </button>
-        </div>
-      </div>
-      <div class="flex items-center gap-2">
-        <div class="flex items-center gap-1 border-l ml-1 pl-1">
-          <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-muted-foreground hover:text-primary transition-colors" title="Jump to Project Root" @click="cdToRoot">
-            <Home class="size-3" />
-          </Button>
-          <Button variant="ghost" size="sm" class="h-6 px-2 text-[10px] text-muted-foreground hover:text-foreground transition-colors" @click="clearLogs">Clear</Button>
-        </div>
-      </div>
-    </div>
-
-
-    <div class="flex-1 flex flex-row min-h-0 bg-card relative">
-      <!-- Main Shell Viewport -->
-      <div v-show="termState.active === 'main'" ref="mainTermRef" class="flex-1 terminal-custom-scroll"></div>
-      
-      <!-- Run Output Viewport -->
-      <div v-show="termState.active === 'run'" ref="runTermRef" class="flex-1 terminal-custom-scroll"></div>
-      
-      <!-- Premium Vertical Execution Sidebar -->
-      <div class="w-14 border-l bg-muted/40 flex flex-col shrink-0 overflow-y-auto scrollbar-none">
-                     <div class="flex-1"></div>
-
-                    <div class="flex flex-col items-center py-8 gap-6 relative">
-                      <!-- Status Indicator with Glow -->
-                      <div class="flex flex-col items-center gap-2 mb-4 group/status cursor-default">
-                        <div class="size-2 rounded-full transition-all duration-500" 
-                             :class="runner.running ? 'bg-green-500 animate-pulse shadow-[0_0_12px_rgba(34,197,94,0.6)]' : 'bg-zinc-700 shadow-[0_0_4px_rgba(0,0,0,0.5)]'">
-                        </div>
-                        <span class="text-[7.5px] uppercase tracking-[0.15em] font-bold transition-colors duration-300" 
-                              :class="runner.running ? 'text-green-400' : 'text-zinc-600'">
-                          {{ runner.running ? 'Run' : 'Idle' }}
-                        </span>
-                      </div>
-
-                      <div class="w-8 h-px bg-white/10 opacity-50"></div>
-
-                      <!-- Control Buttons -->
-                      <Button variant="ghost" 
-                              class="w-12 h-11 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-90"
-                              :class="((runner.buildStatus || runner.loadingTarget === 'build') ? '' : (!canBuild || runner.loadingTarget || runner.buildStatus) ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50')"
-                              :disabled="!canBuild || !!runner.loadingTarget || !!runner.buildStatus"
-                              @click="dotnet('build')">
-                        <div :class="runner.buildStatus ? 'animate-hammer-grow' : ''">
-                          <component :is="runner.loadingTarget === 'build' ? RotateCcw : Hammer" 
-                                     :class="[
-                                       'size-4 transition-all duration-300',
-                                       runner.loadingTarget === 'build' ? 'animate-spin' : '',
-                                       runner.buildStatus ? 'animate-hammer-hit text-[#FC6400]' : 'group-hover/btn:rotate-12 text-zinc-500'
-                                     ]" />
-                        </div>
-                        <!-- Spark Particle -->
-                        <div v-if="runner.buildStatus" class="absolute size-4 bg-[#FAC000]/40 rounded-full animate-spark-pop blur-sm z-0"></div>
-                        <span class="text-[7.5px] uppercase tracking-tighter font-bold transition-all duration-300" 
-                              :class="runner.buildStatus ? 'text-[#FF7500] animate-pulse scale-110' : 'text-zinc-600'">
-                          {{ runner.loadingTarget === 'build' ? '...' : (runner.buildStatus ? 'Building' : 'Build') }}
-                        </span>
+                <div class="px-3 py-1.5 flex items-center justify-between border-b bg-muted/50">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mr-2">Terminal</span>
+                    
+                    <div class="flex items-center gap-1 bg-background/50 p-0.5 rounded-md border shadow-inner" v-if="runner.running || termState.active === 'run'">
+                      <button @click="termState.active = 'main'" 
+                              :class="termState.active === 'main' ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
+                              class="px-2.5 py-0.5 rounded-sm text-[10px] font-bold transition-all uppercase tracking-tighter">
+                        1 Shell
+                      </button>
+                      <button @click="termState.active = 'run'" 
+                              :class="termState.active === 'run' ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
+                              class="px-2.5 py-0.5 rounded-sm text-[10px] font-bold transition-all uppercase tracking-tighter">
+                        2 Output
+                      </button>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-1 border-l ml-1 pl-1">
+                      <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-muted-foreground hover:text-primary transition-colors" title="Jump to Project Root" @click="cdToRoot">
+                        <Home class="size-3" />
                       </Button>
-                      
-                      <Button variant="ghost" 
-                              class="w-12 h-11 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-90"
-                              :class="(runner.loadingTarget === 'rebuild') ? 'text-zinc-200' : (!canBuild || runner.loadingTarget || runner.buildStatus) ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50'"
-                              :disabled="!canBuild || !!runner.loadingTarget || !!runner.buildStatus"
-                              @click="rebuild">
-                        <RotateCcw :class="[
-                                     'size-4 transition-transform duration-300',
-                                     runner.loadingTarget === 'rebuild' ? 'animate-spin' : 'group-hover/btn:-rotate-45'
-                                   ]" />
-                        <span class="text-[8px] uppercase tracking-wide font-semibold">{{ runner.loadingTarget === 'rebuild' ? '...' : 'Rebuild' }}</span>
-                      </Button>
-
-                      <div class="w-8 h-px bg-white/10 opacity-50 my-1"></div>
-
-                      <Button variant="ghost" 
-                              class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95" 
-                              :class="((canTest && runner.loadingTarget === 'bat') ? 'text-blue-500' : (canTest && !runner.loadingTarget && !runner.buildStatus) 
-                                ? 'text-blue-500 hover:text-blue-400 hover:bg-blue-500/10 shadow-[0_0_15px_rgba(59,130,246,0.1)]' 
-                                : 'text-zinc-700 cursor-not-allowed opacity-40')"
-                              :disabled="!canTest || !!runner.loadingTarget || !!runner.buildStatus"
-                              @click="dotnet('run', 'bat')">
-                        <component :is="runner.loadingTarget === 'bat' ? RotateCcw : Beaker"
-                                   :class="[
-                                     'size-5 transition-transform duration-300',
-                                     runner.loadingTarget === 'bat' ? 'animate-spin' : 'group-hover/btn:-rotate-12'
-                                   ]" />
-                        <span class="text-[8px] uppercase tracking-wide font-bold">{{ runner.loadingTarget === 'bat' ? '...' : 'Test' }}</span>
-                      </Button>
-
-                      <Button v-if="!runner.running"
-                              variant="ghost" 
-                              class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95 text-green-500" 
-                              :class="(runner.loadingTarget === 'exe') ? 'opacity-100' : (!canRun || runner.loadingTarget || runner.buildStatus) ? 'opacity-30 cursor-not-allowed grayscale' : 'hover:text-green-400 hover:bg-green-500/10'"
-                              :disabled="!canRun || !!runner.loadingTarget || !!runner.buildStatus"
-                              @click="dotnet('run', 'exe')">
-                        <component :is="runner.loadingTarget === 'exe' ? RotateCcw : Play"
-                                   :class="[
-                                     'size-5 transition-transform duration-300',
-                                     runner.loadingTarget === 'exe' ? 'animate-spin' : 'fill-current group-hover/btn:scale-110'
-                                   ]" />
-                        <span class="text-[8px] uppercase tracking-wide font-bold">{{ runner.loadingTarget === 'exe' ? '...' : 'Run' }}</span>
-                      </Button>
-
-                      <Button v-else
-                              variant="ghost" 
-                              class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95 text-red-500 hover:text-red-400 hover:bg-red-500/10" 
-                              @click="stop">
-                        <Square class="size-5 fill-current group-hover/btn:drop-shadow-[0_0_8px_rgba(239,68,68,0.4)] transition-all" />
-                        <span class="text-[8px] uppercase tracking-wide font-bold">Stop</span>
-                      </Button>
+                      <Button variant="ghost" size="sm" class="h-6 px-2 text-[10px] text-muted-foreground hover:text-foreground transition-colors" @click="clearLogs">Clear</Button>
                     </div>
                   </div>
                 </div>
-              </section>
 
-              <!-- Old Button Section Removed -->
+                <div class="flex-1 flex flex-row min-h-0 bg-card relative">
+                  <!-- Main Shell Viewport -->
+                  <div v-show="termState.active === 'main'" ref="mainTermRef" class="flex-1 terminal-custom-scroll"></div>
+                  
+                  <!-- Run Output Viewport -->
+                  <div v-show="termState.active === 'run'" ref="runTermRef" class="flex-1 terminal-custom-scroll"></div>
+                    <!-- Premium Vertical Execution Sidebar -->
+                  <div class="w-14 border-l bg-muted/40 flex flex-col shrink-0 overflow-y-auto scrollbar-none">
+                    <TooltipProvider>
+                      <div class="flex-1"></div>
+
+                      <div class="flex flex-col items-center py-8 gap-6 relative">
+                        <!-- Status Indicator with Glow -->
+                        <div class="flex flex-col items-center gap-2 mb-4 group/status cursor-default">
+                          <div class="size-2 rounded-full transition-all duration-500" 
+                               :class="runner.running ? 'bg-green-500 animate-pulse shadow-[0_0_12px_rgba(34,197,94,0.6)]' : 'bg-zinc-700 shadow-[0_0_4px_rgba(0,0,0,0.5)]'">
+                          </div>
+                          <span class="text-[7.5px] uppercase tracking-[0.15em] font-bold transition-colors duration-300" 
+                                :class="runner.running ? 'text-green-400' : 'text-zinc-600'">
+                            {{ runner.running ? 'Run' : 'Idle' }}
+                          </span>
+                        </div>
+
+                        <div class="w-8 h-px bg-white/10 opacity-50"></div>
+
+                        <!-- Build Button with Tooltip -->
+                        <Tooltip>
+                          <TooltipTrigger as-child>
+                            <Button variant="ghost" 
+                                    class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-90 relative"
+                                    :class="((runner.buildStatus || runner.loadingTarget === 'build') ? '' : (!canBuild || runner.loadingTarget || runner.buildStatus) ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50')"
+                                    :disabled="!canBuild || !!runner.loadingTarget || !!runner.buildStatus"
+                                    @click="dotnet('build')">
+                              <div :class="runner.buildStatus ? 'animate-hammer-grow' : ''">
+                                <component :is="runner.loadingTarget === 'build' ? RotateCcw : Hammer" 
+                                           :class="[
+                                             'size-4 transition-all duration-300',
+                                             runner.loadingTarget === 'build' ? 'animate-spin' : '',
+                                             runner.buildStatus ? 'animate-hammer-hit text-[#FC6400]' : 'group-hover/btn:rotate-12 text-zinc-500'
+                                           ]" />
+                              </div>
+                              <div v-if="runner.buildStatus" class="absolute size-4 bg-[#FAC000]/40 rounded-full animate-spark-pop blur-sm z-0"></div>
+                              <span class="text-[7.5px] uppercase tracking-tighter font-bold transition-all duration-300" 
+                                    :class="runner.buildStatus ? 'text-[#FF7500] animate-pulse scale-110' : 'text-zinc-600'">
+                                {{ runner.loadingTarget === 'build' ? '...' : (runner.buildStatus ? 'Building' : 'Build') }}
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="left" :side-offset="12">
+                            <div class="flex items-center gap-3">
+                              <span class="text-zinc-400 font-semibold tracking-wide">Build Project</span>
+                              <div class="h-4 w-px bg-white/10"></div>
+                              <HotkeyLabel :shortcut="runner.shortcuts.build" size="lg" variant="solid" />
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                        
+                        <!-- Rebuild Button with Tooltip -->
+                        <Tooltip>
+                          <TooltipTrigger as-child>
+                            <Button variant="ghost" 
+                                    class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-90 relative"
+                                    :class="(runner.loadingTarget === 'rebuild') ? 'text-zinc-200' : (!canBuild || runner.loadingTarget || runner.buildStatus) ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50'"
+                                    :disabled="!canBuild || !!runner.loadingTarget || !!runner.buildStatus"
+                                    @click="rebuild">
+                              <RotateCcw :class="[
+                                           'size-4 transition-transform duration-300',
+                                           runner.loadingTarget === 'rebuild' ? 'animate-spin' : 'group-hover/btn:-rotate-45'
+                                         ]" />
+                              <span class="text-[8px] uppercase tracking-wide font-semibold">{{ runner.loadingTarget === 'rebuild' ? '...' : 'Rebuild' }}</span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="left" :side-offset="12">
+                            <div class="flex items-center gap-3">
+                              <span class="text-zinc-400 font-semibold tracking-wide">Rebuild All</span>
+                              <div class="h-4 w-px bg-white/10"></div>
+                              <HotkeyLabel :shortcut="runner.shortcuts.rebuild" size="lg" variant="solid" />
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <div class="w-8 h-px bg-white/10 opacity-50 my-1"></div>
+
+                        <!-- Test Button with Tooltip -->
+                        <Tooltip>
+                          <TooltipTrigger as-child>
+                            <Button variant="ghost" 
+                                    class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95 text-blue-500 relative" 
+                                    :class="((canTest && runner.loadingTarget === 'bat') ? 'text-blue-500' : (canTest && !runner.loadingTarget && !runner.buildStatus) 
+                                      ? 'text-blue-500 hover:text-blue-400 hover:bg-blue-500/10 shadow-[0_0_15px_rgba(59,130,246,0.1)]' 
+                                      : 'text-zinc-700 cursor-not-allowed opacity-40')"
+                                    :disabled="!canTest || !!runner.loadingTarget || !!runner.buildStatus"
+                                    @click="dotnet('run', 'bat')">
+                              <component :is="runner.loadingTarget === 'bat' ? RotateCcw : Beaker"
+                                         :class="[
+                                           'size-5 transition-transform duration-300',
+                                           runner.loadingTarget === 'bat' ? 'animate-spin' : 'group-hover/btn:-rotate-12'
+                                         ]" />
+                              <span class="text-[8px] uppercase tracking-wide font-bold">{{ runner.loadingTarget === 'bat' ? '...' : 'Test' }}</span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="left" :side-offset="12">
+                            <div class="flex items-center gap-3">
+                              <span class="text-blue-400 font-semibold tracking-wide">Run Test (BAT)</span>
+                              <div class="h-4 w-px bg-white/10"></div>
+                              <HotkeyLabel :shortcut="runner.shortcuts.test" size="lg" variant="solid" />
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <!-- Run Button with Tooltip -->
+                        <template v-if="!runner.running">
+                          <Tooltip>
+                            <TooltipTrigger as-child>
+                              <Button variant="ghost" 
+                                      class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95 text-green-500 relative" 
+                                      :class="(runner.loadingTarget === 'exe') ? 'opacity-100' : (!canRun || runner.loadingTarget || runner.buildStatus) ? 'opacity-30 cursor-not-allowed grayscale' : 'hover:text-green-400 hover:bg-green-500/10'"
+                                      :disabled="!canRun || !!runner.loadingTarget || !!runner.buildStatus"
+                                      @click="dotnet('run', 'exe')">
+                                <component :is="runner.loadingTarget === 'exe' ? RotateCcw : Play"
+                                           :class="[
+                                             'size-5 transition-transform duration-300',
+                                             runner.loadingTarget === 'exe' ? 'animate-spin' : 'fill-current group-hover/btn:scale-110'
+                                           ]" />
+                                <span class="text-[8px] uppercase tracking-wide font-bold">{{ runner.loadingTarget === 'exe' ? '...' : 'Run' }}</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="left" :side-offset="12">
+                              <div class="flex items-center gap-3">
+                                <span class="text-green-400 font-semibold tracking-wide">Run Application</span>
+                                <div class="h-4 w-px bg-white/10"></div>
+                                <HotkeyLabel :shortcut="runner.shortcuts.run" size="lg" variant="solid" />
+                              </div>
+                            </TooltipContent>
+                          </Tooltip>
+                        </template>
+
+                        <!-- Stop Button with Tooltip -->
+                        <template v-else>
+                          <Tooltip>
+                            <TooltipTrigger as-child>
+                              <Button variant="ghost" 
+                                      class="w-12 h-14 flex flex-col items-center justify-center gap-1.5 px-0 transition-all group/btn active:scale-95 text-red-500 hover:text-red-400 hover:bg-red-500/10 relative" 
+                                      @click="stop">
+                                <Square class="size-5 fill-current group-hover/btn:drop-shadow-[0_0_8px_rgba(239,68,68,0.4)] transition-all" />
+                                <span class="text-[8px] uppercase tracking-wide font-bold">Stop</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="left" :side-offset="12">
+                              <div class="flex items-center gap-3">
+                                <span class="text-red-400 font-semibold tracking-wide">Stop Execution</span>
+                                <div class="h-4 w-px bg-white/10"></div>
+                                <HotkeyLabel :shortcut="runner.shortcuts.stop" size="lg" variant="solid" />
+                              </div>
+                            </TooltipContent>
+                          </Tooltip>
+                        </template>
+                      </div>
+                    </TooltipProvider>
+                  </div>
+                </div>
+              </section>
             </div>
           </section>
         </TabsContent>
-
-
       </Tabs>
     </main>
     <Toaster richColors position="bottom-right" closeButton expand />
+
+    <!-- Premium Global Hotkey Dialog -->
+    <Dialog :open="showHotkeySettings" @update:open="val => { showHotkeySettings = val; if(!val) stopRecordingShortcut(); }">
+      <DialogContent class="max-w-2xl p-0 border-0 bg-transparent shadow-none overflow-visible">
+        <HotkeyManager 
+          :shortcuts="runner.shortcuts"
+          :isRecording="isRecordingShortcut"
+          :recordingAction="recordingAction"
+          @start-recording="startRecordingShortcut"
+          @stop-recording="stopRecordingShortcut"
+          @update:shortcut="(action, val) => { runner.shortcuts[action] = val; saveUIState(); updateGlobalShortcut(action, val); }"
+          @reset-all="resetAllShortcuts"
+          @close="showHotkeySettings = false"
+        />
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="isNamingSqlSnippet" @update:open="val => isNamingSqlSnippet = val">
+      <DialogContent class="sm:max-w-[425px] rounded-3xl border border-primary/10 shadow-2xl bg-card/95 backdrop-blur-xl">
+        <DialogHeader>
+          <DialogTitle class="text-[14px] font-black uppercase tracking-widest text-primary flex items-center gap-2">
+            <Code2 class="size-4" /> {{ namingSqlSnippetTitle }}
+          </DialogTitle>
+        </DialogHeader>
+        <div class="py-6 space-y-4">
+          <div class="space-y-2">
+            <Label class="text-[10px] font-black uppercase text-muted-foreground opacity-60 ml-1 font-mono">Script Name</Label>
+            <Input 
+              v-model="namingSqlSnippetValue" 
+              class="h-11 rounded-xl bg-muted/30 border-primary/5 focus:border-primary/20 focus:ring-2 focus:ring-primary/10 transition-all font-bold px-4" 
+              placeholder="e.g., Update Database Schema"
+              autofocus
+              @keydown.enter="commitSqlSnippetName"
+            />
+          </div>
+        </div>
+        <div class="flex items-center justify-end gap-3 mt-2">
+          <Button variant="ghost" class="h-10 px-6 rounded-xl text-[11px] font-black uppercase tracking-widest opacity-60 hover:opacity-100" @click="isNamingSqlSnippet = false">
+            Cancel
+          </Button>
+          <Button class="h-11 px-8 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-xl shadow-primary/20 bg-primary hover:bg-primary/90" @click="commitSqlSnippetName">
+            Save Script
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
 

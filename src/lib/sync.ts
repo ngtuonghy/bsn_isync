@@ -18,7 +18,8 @@ export class SyncService {
 
   constructor(baseUrl: string, host: string, token: string) {
     this.baseUrl = baseUrl;
-    this.host = host;
+    // Sanitize host: remove protocol if exists, and trailing slashes
+    this.host = host.replace(/^https?:\/\//, '').replace(/\/$/, '');
     this.token = token;
   }
 
@@ -30,13 +31,46 @@ export class SyncService {
     };
   }
 
+  private async handleError(res: Response): Promise<string> {
+    try {
+      const data = await res.json();
+      if (data.error && data.details) {
+        return `${data.error}: ${data.details}`;
+      }
+      return data.error || data.message || `Error ${res.status}`;
+    } catch {
+      return res.statusText || `Error ${res.status}`;
+    }
+  }
+
   async getProfiles(): Promise<any[]> {
     const res = await window.fetch(`${this.baseUrl}/api/v1/profiles`, {
       method: 'GET',
       headers: this.headers
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    if (!res.ok) {
+      throw new Error(await this.handleError(res));
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data : (data.results || data.data || []);
+  }
+  
+  async getProfile(id: string): Promise<any> {
+    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles/${id}`, {
+      method: 'GET',
+      headers: this.headers
+    });
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(await this.handleError(res));
+    }
+    const data = await res.json();
+    // Return either the raw object or the nested data/result if wrapped
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      if (data.id && data.content) return data; // It's the raw profile
+      return data.data || data.result || data;
+    }
+    return data;
   }
 
   async upsertProfile(profile: SyncProfile): Promise<SyncResult> {
@@ -45,7 +79,7 @@ export class SyncService {
       headers: this.headers,
       body: JSON.stringify(profile)
     });
-    if (!res.ok) return { success: false, error: await res.text() };
+    if (!res.ok) return { success: false, error: await this.handleError(res) };
     return { success: true };
   }
 
@@ -54,17 +88,7 @@ export class SyncService {
       method: 'DELETE',
       headers: this.headers
     });
-    if (!res.ok) return { success: false, error: await res.text() };
-    return { success: true };
-  }
-
-  async shareProfile(id: string, targetUserId: string, role: 'editor' | 'viewer' | 'remove'): Promise<SyncResult> {
-    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles/${id}/share`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ targetUserId, role })
-    });
-    if (!res.ok) return { success: false, error: await res.text() };
+    if (!res.ok) return { success: false, error: await this.handleError(res) };
     return { success: true };
   }
 }

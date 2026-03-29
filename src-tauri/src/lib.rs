@@ -110,12 +110,21 @@ struct ProjectCandidate {
 struct DotnetRequest {
     project_root: String,
     startup_project: String,
+    urls: Option<String>,
     build_config: Option<String>,
     alias_exe_name: Option<String>,
     bat_file_path: Option<String>,
     target: Option<String>,
     config_template: Option<String>,
+    sql_setup_path: Option<String>,
+    sql_server: Option<String>,
+    sql_database: Option<String>,
+    sql_user: Option<String>,
+    sql_password: Option<String>,
+    sql_use_windows_auth: Option<bool>,
     run_args: Option<String>,
+    deploy_path: Option<String>,
+    run_config_template: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +136,8 @@ struct DotnetOnceRequest {
     build_config: Option<String>,
     alias_exe_name: Option<String>,
     config_template: Option<String>,
+    run_config_template: Option<String>,
+    deploy_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -273,12 +284,15 @@ fn copy_alias_exe_and_config(
     config: &str,
     alias_exe_name: Option<&String>,
     config_template: Option<&String>,
+    run_config_template: Option<&String>,
+    deploy_path: Option<&String>,
 ) -> Result<Option<String>, String> {
+    let is_rba = startup_abs.to_string_lossy().to_ascii_lowercase().contains("receivebatchaction");
     let mut alias = alias_exe_name
         .map(|x| x.trim().to_string())
         .filter(|x| !x.is_empty())
-        .unwrap_or_else(|| "JE5912.exe".to_string());
-    if !alias.to_ascii_lowercase().ends_with(".exe") {
+        .unwrap_or_else(|| if is_rba { "JE5912.exe".to_string() } else { String::new() });
+    if !alias.is_empty() && !alias.to_ascii_lowercase().ends_with(".exe") {
         alias.push_str(".exe");
     }
     let project_dir = startup_abs
@@ -312,7 +326,7 @@ fn copy_alias_exe_and_config(
         }
     }
 
-    let src = if let Some(p) = custom_out {
+    let src = if let Some(ref p) = custom_out {
         project_dir.join(p.replace('\\', "/")).join(&source_exe_name)
     } else {
         project_dir.join("bin").join(&config).join(&source_exe_name)
@@ -323,8 +337,22 @@ fn copy_alias_exe_and_config(
     } else {
         alias.clone()
     };
-    let dst = project_dir.join("bin").join(&config).join(&final_alias);
-    fs::create_dir_all(dst.parent().unwrap()).map_err(|e| format!("Could not create bin directory: {e}"))?;
+    
+    let dst_dir = if let Some(p) = deploy_path {
+        let pb = normalize_input_path(p);
+        if pb.is_absolute() {
+            pb
+        } else {
+            root.join(pb)
+        }
+    } else if let Some(ref p) = custom_out {
+        project_dir.join(p.replace('\\', "/"))
+    } else {
+        project_dir.join("bin").join(&config)
+    };
+    
+    let dst = dst_dir.join(&final_alias);
+    fs::create_dir_all(dst.parent().unwrap()).map_err(|e| format!("Could not create destination directory: {e}"))?;
     let _root_canon = fs::canonicalize(root).map_err(|e| format!("Invalid project root: {e}"))?;
     let src_canon = fs::canonicalize(&src).map_err(|e| format!("EXE file not found after build: {e}"))?;
     // Cho phép source exe nằm ngoài project root vì nhiều `.csproj` cấu hình xuất ra thư mục chung (vd: ..\..\batch\EXE\)
@@ -340,12 +368,25 @@ fn copy_alias_exe_and_config(
     // A small delay to ensure the OS has released the file handles
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    fs::copy(&src_canon, &dst).map_err(|e| format!("Failed to copy exe to alias: {e}"))?;
+    let dst_canon_opt = fs::canonicalize(&dst).ok();
+    if Some(src_canon.clone()) != dst_canon_opt {
+        fs::copy(&src_canon, &dst).map_err(|e| format!("Failed to copy exe to alias: {e}"))?;
+    }
+    
     let config_path = dst.with_extension("exe.config");
-    let template = config_template
+    
+    // Choose which template to use: run_config_template if copying RBA, otherwise config_template
+    let effective_template = if is_rba && run_config_template.is_some() {
+        run_config_template
+    } else {
+        config_template
+    };
+
+    let template = effective_template
         .map(|x| x.trim().to_string())
         .filter(|x| !x.is_empty())
         .unwrap_or_else(|| build_default_config_template(&alias));
+    
     fs::write(&config_path, template).map_err(|e| format!("Failed to write config file: {e}"))?;
     Ok(Some(format!(
         "Copied {} -> {}\nWrote config {}",
@@ -480,14 +521,8 @@ fn collect_project_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Strin
     Ok(())
 }
 
-fn top_group_root(root: &Path, file: &Path) -> PathBuf {
-    let rel = file.strip_prefix(root).unwrap_or(file);
-    let mut components = rel.components();
-    if let Some(first) = components.next() {
-        root.join(first.as_os_str())
-    } else {
-        root.to_path_buf()
-    }
+fn top_group_root(_root: &Path, file: &Path) -> PathBuf {
+    file.parent().unwrap_or(file).to_path_buf()
 }
 
 #[tauri::command]
@@ -616,6 +651,8 @@ fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> {
                 &config,
                 request.alias_exe_name.as_ref(),
                 request.config_template.as_ref(),
+                request.run_config_template.as_ref(),
+                request.deploy_path.as_ref(),
             )? {
                 output.stdout = if output.stdout.trim().is_empty() {
                     copy_msg
@@ -683,6 +720,8 @@ fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
             &config,
             request.alias_exe_name.as_ref(),
             request.config_template.as_ref(),
+            request.run_config_template.as_ref(), // Fixed: Added missing 6th argument
+            request.deploy_path.as_ref(), // Now correctly argument #7
         )? {
             build_out.stdout = if build_out.stdout.is_empty() {
                 copy_msg
@@ -812,10 +851,23 @@ fn dotnet_run_start(
 
             if let Some(copy_msg) = copy_alias_exe_and_config(
                 &root,
-                &target_abs,
+                &startup_abs, // Apply target config to Target project output path FIRST
+                &config,
+                None,
+                request.config_template.as_ref(),
+                None,
+                request.deploy_path.as_ref(),
+            )? {
+                let _ = app.emit("runner-log", copy_msg);
+            }
+            if let Some(copy_msg) = copy_alias_exe_and_config(
+                &root,
+                &target_abs, // Apply run config to RBA output path
                 &config,
                 request.alias_exe_name.as_ref(),
-                request.config_template.as_ref(),
+                None,
+                request.run_config_template.as_ref(),
+                request.deploy_path.as_ref(),
             )? {
                 let _ = app.emit("runner-log", copy_msg);
             }
@@ -830,14 +882,29 @@ fn dotnet_run_start(
         target_abs = rba;
     }
 
-    // Always try to update/copy alias and config before running
+    // Apply target config override to the tested target project's output
     let _ = copy_alias_exe_and_config(
         &root,
-        &target_abs,
+        &startup_abs,
         &config,
-        request.alias_exe_name.as_ref(),
+        None,
         request.config_template.as_ref(),
+        None,
+        request.deploy_path.as_ref(),
     );
+
+    // Also update RBA alias and config
+    if let Some(rba) = get_receive_batch_action(&startup_abs) {
+        let _ = copy_alias_exe_and_config(
+            &root,
+            &rba,
+            &config,
+            request.alias_exe_name.as_ref(),
+            None,
+            request.run_config_template.as_ref(),
+            request.deploy_path.as_ref(),
+        );
+    }
 
     let alias = request.alias_exe_name
         .as_ref()
@@ -957,6 +1024,28 @@ fn dotnet_run_is_running(state: State<RunnerState>) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn deploy_project_config(project_root: String, startup_project: String, config_template: String) -> Result<String, String> {
+    let root = normalize_input_path(&project_root);
+    let startup_abs = validate_startup_abs(&root, &startup_project)?;
+    let project_dir = startup_abs.parent().ok_or_else(|| "Could not determine project directory".to_string())?;
+    let config_path = project_dir.join("App.config");
+    fs::write(&config_path, config_template).map_err(|e| format!("Failed to write App.config: {e}"))?;
+    Ok(normalize_path(&config_path))
+}
+
+#[tauri::command]
+fn fetch_project_config(project_root: String, startup_project: String) -> Result<String, String> {
+    let root = normalize_input_path(&project_root);
+    let startup_abs = validate_startup_abs(&root, &startup_project)?;
+    let project_dir = startup_abs.parent().ok_or_else(|| "Could not determine project directory".to_string())?;
+    let config_path = project_dir.join("App.config");
+    if !config_path.exists() {
+        return Err("App.config does not exist in the target project folder".to_string());
+    }
+    fs::read_to_string(&config_path).map_err(|e| format!("Failed to read App.config: {e}"))
+}
+
+#[tauri::command]
 fn sync_asset(request: SyncAssetRequest) -> Result<CommandResult, String> {
     let root = normalize_input_path(&request.project_root);
     let source = normalize_input_path(&request.source);
@@ -1032,6 +1121,12 @@ fn prepare_sql_temp_file(content: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(path, None::<String>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn check_environment() -> Vec<ToolCheck> {
     let mut results = Vec::new();
 
@@ -1094,6 +1189,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
@@ -1124,10 +1220,14 @@ pub fn run() {
             sync_asset,
             get_backlog_config,
             get_backlog_auth_url,
+
             backlog_oauth_exchange,
             backlog_oauth_refresh,
             run_sql_only,
             prepare_sql_temp_file,
+            open_file,
+            deploy_project_config,
+            fetch_project_config,
             check_environment,
             updater::check_update,
             updater::download_and_install_update,
