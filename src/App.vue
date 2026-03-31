@@ -161,6 +161,7 @@ type ProjectProfile = {
   useWindowsAuth?: boolean;
   configTemplate: string;
   runConfigTemplate?: string;
+  connectionStringTemplate?: string;
   sqlSnippets?: { id: string; name: string; content: string }[];
   activeSqlSnippetId?: string;
   sync?: any;
@@ -169,6 +170,7 @@ type ProjectProfile = {
   backlogIssueKey?: string;
   backlogIssueSummary?: string;
   deployPath?: string;
+  updatedAt: number;
   shortcuts?: Record<string, string>;
 };
 
@@ -209,6 +211,7 @@ const backlog = reactive({
   projects: [] as BacklogProject[],
   issueTypes: [] as BacklogIssueType[],
   issues: [] as BacklogIssue[],
+  updatedAt: 0,
 });
 
 const backlogIssueUrl = computed(() => {
@@ -376,6 +379,7 @@ async function loadUIState() {
  */
 async function saveUIState() {
   try {
+    backlog.updatedAt = Date.now();
     const state = {
       activeTab: activeTab.value,
       dark: dark.value,
@@ -389,10 +393,16 @@ async function saveUIState() {
         host: backlog.host,
         token: backlog.token,
         profile: backlog.profile,
+        updatedAt: backlog.updatedAt,
       }
     };
     await setItem(UI_STATE_KEY, state);
     console.log("[Store] UI state changed (saving via autoSave).");
+    
+    // Trigger Sync when critical UI state (Backlog account) changes
+    if (backlog.token?.access_token) {
+       triggerSync();
+    }
   } catch (e) {
     console.error("[Store] Failed to trigger save UI state", e);
   }
@@ -936,6 +946,7 @@ const runner = reactive({
 		<add key="Execute.EnvId" value="Arkbell_Dev" />
 	</appSettings>
 </configuration>`,
+  connectionStringTemplate: "",
   running: false,
   loadingTarget: null as "exe" | "build" | "restore" | "rebuild" | "bat" | null,
   logs: [] as string[],
@@ -1046,6 +1057,18 @@ function applyConfigSyncToTemplates() {
   const syncTemplate = (tpl: string) => {
     if (!tpl) return tpl;
     let t = tpl;
+    
+    // 0. ConnectionStrings Override
+    if (runner.connectionStringTemplate && runner.connectionStringTemplate.trim()) {
+      const connStrSection = runner.connectionStringTemplate.trim();
+      // Replace existing <connectionStrings> block if present, otherwise just keep going
+      // (Simplified regex matching for entire connectionStrings block)
+      const sectionMatch = /<connectionStrings>[\s\S]*?<\/connectionStrings>/i;
+      if (sectionMatch.test(t)) {
+        t = t.replace(sectionMatch, connStrSection);
+      }
+    }
+    
     // 1. Replace Job.MsmqName value
     t = t.replace(/(<add key="Job\.MsmqName" value=")([^"]*)(" \/>)/, `$1${msmq}$3`);
     // 2. Replace Job.BatFilePath value
@@ -1069,7 +1092,7 @@ function applyConfigSyncToTemplates() {
   runner.runConfigTemplate = syncTemplate(runner.runConfigTemplate);
 }
 // Auto-sync both templates with UI inputs
-watch(() => [runner.aliasExeName, runner.batFilePath, runner.sqlServer, runner.sqlDatabase], applyConfigSyncToTemplates);
+watch(() => [runner.aliasExeName, runner.batFilePath, runner.sqlServer, runner.sqlDatabase, runner.connectionStringTemplate], applyConfigSyncToTemplates);
 
 // Auto-derive EXE Name from BAT Path silently
 watch(() => runner.batFilePath, (newPath) => {
@@ -1150,25 +1173,28 @@ const isDatabaseOverridden = computed(() => {
 });
 
 function buildSetupFromRunner(name: string): ProjectProfile {
-  // Store projectRoot RELATIVE to workspaceRoot if possible
-  let projectRoot = runner.projectRoot;
-  if (runner.workspaceRoot && projectRoot.startsWith(runner.workspaceRoot)) {
-    projectRoot = projectRoot.substring(runner.workspaceRoot.length);
-    if (projectRoot.startsWith("\\") || projectRoot.startsWith("/")) {
-      projectRoot = projectRoot.substring(1);
+  // Helper to convert to relative if possible
+  const toRel = (p: string) => {
+    if (!p || !runner.workspaceRoot) return p;
+    const ws = runner.workspaceRoot.replace(/[\\/]$/, "");
+    if (p.startsWith(ws)) {
+      let rel = p.substring(ws.length);
+      if (rel.startsWith("\\") || rel.startsWith("/")) rel = rel.substring(1);
+      return rel;
     }
-  }
+    return p;
+  };
 
   return {
     id: makeProfileId(),
     name,
     owner: currentUser.value,
-    projectRoot,
+    projectRoot: toRel(runner.projectRoot),
     startupProject: runner.startupProject,
     buildConfig: runner.config === "Release" ? "Release" : "Debug",
     urls: runner.urls,
     aliasExeName: runner.aliasExeName,
-    batFilePath: runner.batFilePath,
+    batFilePath: toRel(runner.batFilePath),
     runArgs: runner.runArgs,
     sqlSetupPath: runner.sqlSetupPath,
     sqlServer: runner.sqlServer,
@@ -1178,39 +1204,44 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     useWindowsAuth: runner.useWindowsAuth,
     configTemplate: runner.configTemplate,
     runConfigTemplate: runner.runConfigTemplate,
+    connectionStringTemplate: runner.connectionStringTemplate,
     sqlSnippets: JSON.parse(JSON.stringify(runner.sqlSnippets)),
     activeSqlSnippetId: runner.activeSqlSnippetId,
     backlogProjectKey: runner.backlogProjectKey,
     backlogIssueTypeId: runner.backlogIssueTypeId,
     backlogIssueKey: runner.backlogIssueKey,
     backlogIssueSummary: runner.backlogIssueSummary,
+    deployPath: toRel(runner.deployPath),
     // shortcut is now independent and global
     sync: (() => {
       const { logs, ...syncData } = sync;
       return JSON.parse(JSON.stringify(syncData));
     })(),
+    updatedAt: Date.now(),
   };
 }
 
 function applySetupToRunner(setup: ProjectProfile) {
-  // 1. Resolve Project Root (handle both absolute migration and relative expansion)
-  let absoluteRoot = setup.projectRoot || "";
-  if (absoluteRoot && !/^[A-Z]:\\/i.test(absoluteRoot) && !absoluteRoot.startsWith("\\\\") && !absoluteRoot.startsWith("/")) {
+  // Helper to convert to absolute
+  const toAbs = (p: string) => {
+    if (!p) return "";
+    if (/^[A-Z]:\\/i.test(p) || p.startsWith("\\\\") || p.startsWith("/")) return p;
     // It's a RELATIVE path, prepend current workspaceRoot
     const ws = runner.workspaceRoot.replace(/[\\/]$/, "");
-    absoluteRoot = ws ? `${ws}\\${absoluteRoot}` : absoluteRoot;
-  }
-  
-  // Update runner with absolute path for execution
-  runner.projectRoot = normalizePath(absoluteRoot);
+    return ws ? `${ws}\\${p}` : p;
+  };
+
+  // 1. Resolve Paths (handle both absolute migration and relative expansion)
+  runner.projectRoot = normalizePath(toAbs(setup.projectRoot || ""));
   selectedProjectRoot.value = runner.projectRoot;
   runner.startupProject = setup.startupProject || "";
   
   runner.config = setup.buildConfig;
   runner.urls = setup.urls || "";
   runner.aliasExeName = setup.aliasExeName || "";
-  runner.batFilePath = setup.batFilePath || "";
+  runner.batFilePath = toAbs(setup.batFilePath || "");
   runner.runArgs = setup.runArgs || "";
+  runner.deployPath = toAbs(setup.deployPath || "");
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
   // Deliberately DO NOT override runner.sqlServer: keep it local per machine
@@ -1220,6 +1251,7 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.useWindowsAuth = !!setup.useWindowsAuth;
   runner.configTemplate = setup.configTemplate || "";
   runner.runConfigTemplate = setup.runConfigTemplate || "";
+  runner.connectionStringTemplate = setup.connectionStringTemplate || "";
   
   if (setup.sqlSnippets && Array.isArray(setup.sqlSnippets)) {
     runner.sqlSnippets = JSON.parse(JSON.stringify(setup.sqlSnippets));
@@ -1323,65 +1355,95 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
   syncStatus.value = skipPush ? 'saving' : 'saving'; // Both show the spinner/syncing state
   
   try {
-    // 1. PUSH (Incremental or Full)
+    // 1. PUSH (Incremental or Full) - Parallelized for Speed
     if (!skipPush) {
+      const pushTasks = [];
       if (targetId) {
-        // INCREMENTAL PUSH: Only upload the specific profile that changed
         const profile = setupProfiles.value.find(p => p.id === targetId);
         if (profile && profile.owner === currentUser.value) {
-          await syncService.value.upsertProfile({
+          pushTasks.push(syncService.value.upsertProfile({
             id: profile.id,
             name: profile.name,
             content: profile
-          });
+          }));
         }
       } else {
-        // FULL PUSH: Standard behavior for startup or manual refresh
-        for (const profile of setupProfiles.value) {
-          if (profile.owner === currentUser.value) {
-            await syncService.value.upsertProfile({
-              id: profile.id,
-              name: profile.name,
-              content: profile
-            });
+        // FULL PUSH: Run all upserts in parallel
+        setupProfiles.value
+          .filter(p => p.owner === currentUser.value)
+          .forEach(p => pushTasks.push(syncService.value!.upsertProfile({
+            id: p.id,
+            name: p.name,
+            content: p
+          })));
+          
+        // Also push Backlog Global Settings
+        pushTasks.push(syncService.value.upsertProfile({
+          id: "__global_backlog_settings__",
+          name: "Global Backlog Settings",
+          content: {
+            host: backlog.host,
+            token: backlog.token,
+            profile: backlog.profile,
+            updatedAt: backlog.updatedAt || Date.now()
           }
-        }
+        }));
       }
+      await Promise.all(pushTasks);
     }
 
-    // 2. PULL ALL profiles from cloud (or targeted pull)
-    // CRITICAL: If targetId is provided, always prefer a targeted pull to avoid bulk GET
+    // 2. PULL & CONFLICT RESOLUTION (Time-based Pull)
     const cloudResults = targetId 
       ? [await syncService.value.getProfile(targetId)].filter(Boolean)
       : await syncService.value.getProfiles();
 
     const localMap = new Map(setupProfiles.value.map(p => [p.id, p]));
-    let changed = false;
+    let profilesChanged = false;
+    let backlogChanged = false;
 
     cloudResults.forEach((cp: any) => {
       const content = typeof cp.content === 'string' ? JSON.parse(cp.content) : cp.content;
       if (!content) return;
       
-      if (!localMap.has(cp.id)) {
-        // Validation: New profile from cloud must be meaningful
+      // Global Backlog Settings Sync
+      if (cp.id === "__global_backlog_settings__") {
+        const cloudUpdateAt = content.updatedAt || 0;
+        const localUpdateAt = backlog.updatedAt || 0;
+        if (cloudUpdateAt > localUpdateAt) {
+          Object.assign(backlog, content);
+          backlogChanged = true;
+        }
+        return;
+      }
+      
+      const cloudUpdateAt = content.updatedAt || 0;
+      
+      if (!localMap.has(cp.id)) { // NEW PROFILE from cloud
         const isPlaceholder = !content.projectRoot && /^Setup\s+\d+$/i.test(content.name);
-        if (isPlaceholder) return; // Skip "ghost" profiles from cloud
+        if (isPlaceholder) return;
 
         setupProfiles.value.push({ ...content });
-        changed = true;
-      } else {
+        profilesChanged = true;
+      } else { // EXISTING PROFILE match
         const local = localMap.get(cp.id)!;
-        // If it's someone else's profile, update our local copy from cloud
-        if (local.owner !== currentUser.value) {
+        const localUpdateAt = local.updatedAt || 0;
+        
+        // CONFLICT RESOLUTION: "Last Write Wins"
+        if (local.owner !== currentUser.value || cloudUpdateAt > localUpdateAt) {
           const idx = setupProfiles.value.findIndex(p => p.id === cp.id);
           setupProfiles.value[idx] = { ...content };
-          changed = true;
+          profilesChanged = true;
         }
       }
     });
 
-    if (changed) {
+    if (profilesChanged) {
       await setItem(setupStorageKey(), setupProfiles.value);
+      if (selectedSetupId.value) applySelectedSetupProfile(true);
+    }
+    
+    if (backlogChanged) {
+      await saveUIState();
     }
 
     syncStatus.value = 'saved';
@@ -1481,21 +1543,24 @@ function saveCurrentToSelectedSetupProfile() {
   
   const setup = { ...setupProfiles.value[idx] };
   
-  // Store projectRoot RELATIVE to workspaceRoot if possible
-  let projectRoot = runner.projectRoot;
-  if (runner.workspaceRoot && projectRoot.startsWith(runner.workspaceRoot)) {
-    projectRoot = projectRoot.substring(runner.workspaceRoot.length);
-    if (projectRoot.startsWith("\\") || projectRoot.startsWith("/")) {
-      projectRoot = projectRoot.substring(1);
+  // Helper to convert to relative if possible
+  const toRel = (p: string) => {
+    if (!p || !runner.workspaceRoot) return p;
+    const ws = runner.workspaceRoot.replace(/[\\/]$/, "");
+    if (p.startsWith(ws)) {
+      let rel = p.substring(ws.length);
+      if (rel.startsWith("\\") || rel.startsWith("/")) rel = rel.substring(1);
+      return rel;
     }
-  }
+    return p;
+  };
   
-  setup.projectRoot = projectRoot;
+  setup.projectRoot = toRel(runner.projectRoot);
   setup.startupProject = runner.startupProject;
   setup.buildConfig = runner.config === "Release" ? "Release" : "Debug";
   setup.urls = runner.urls;
   setup.aliasExeName = runner.aliasExeName;
-  setup.batFilePath = runner.batFilePath;
+  setup.batFilePath = toRel(runner.batFilePath);
   setup.runArgs = runner.runArgs;
   setup.sqlSetupPath = runner.sqlSetupPath;
   // Deliberately omitted sqlServer to prevent syncing local workstation host configs to cloud
@@ -1505,6 +1570,7 @@ function saveCurrentToSelectedSetupProfile() {
   setup.useWindowsAuth = runner.useWindowsAuth;
   setup.configTemplate = runner.configTemplate;
   setup.runConfigTemplate = runner.runConfigTemplate;
+  setup.connectionStringTemplate = runner.connectionStringTemplate;
   setup.sqlSnippets = JSON.parse(JSON.stringify(runner.sqlSnippets));
   setup.activeSqlSnippetId = runner.activeSqlSnippetId;
   setup.sync = (() => {
@@ -1516,6 +1582,8 @@ function saveCurrentToSelectedSetupProfile() {
   setup.backlogIssueTypeId = runner.backlogIssueTypeId;
   setup.backlogIssueKey = runner.backlogIssueKey;
   setup.backlogIssueSummary = runner.backlogIssueSummary;
+  setup.deployPath = toRel(runner.deployPath);
+  setup.updatedAt = Date.now();
   
   setupProfiles.value[idx] = setup;
   saveSetupsForCurrentRoot();
@@ -1819,6 +1887,13 @@ function applySelectedProject() {
   runner.projectRoot = normalizePath(selected.root);
   if (selected.startupProject) {
     runner.startupProject = selected.startupProject;
+  }
+
+  // Auto-Discovery for BAT file if current is empty
+  if (!runner.batFilePath && (selected as any).foundBat) {
+    const ws = runner.workspaceRoot.replace(/[\\/]$/, "");
+    runner.batFilePath = normalizePath(`${ws}\\${(selected as any).foundBat}`);
+    toast.info("Auto-discovered matching BAT file", { description: (selected as any).foundBat });
   }
   
   // Sync PTY terminal location
@@ -2906,9 +2981,10 @@ onUnmounted(() => {
                               
                               <div class="flex-1 overflow-hidden p-6">
                                   <Tabs defaultValue="target" class="h-full flex flex-col gap-6">
-                                    <TabsList class="grid w-full grid-cols-2 h-10 p-1 bg-muted/50 rounded-xl">
+                                    <TabsList class="grid w-full grid-cols-3 h-10 p-1 bg-muted/50 rounded-xl">
                                       <TabsTrigger value="target" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Target Config (Test)</TabsTrigger>
                                       <TabsTrigger value="run" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Run Config (Exe)</TabsTrigger>
+                                      <TabsTrigger value="conn" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Connection Strings</TabsTrigger>
                                     </TabsList>
                                     
                                     <TabsContent value="target" class="flex flex-col flex-1 min-h-0 mt-0 gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
@@ -2940,6 +3016,23 @@ onUnmounted(() => {
                                                     class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
                                                     placeholder="<!-- Run XML content -->" 
                                                     :disabled="!canEditSelected" />
+                                       </div>
+                                    </TabsContent>
+                                    <TabsContent value="conn" class="flex flex-col flex-1 min-h-0 mt-0 animate-in fade-in slide-in-from-top-4 duration-300">
+                                       <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
+                                          <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
+                                            <div class="flex items-center gap-2">
+                                              <div class="size-2 rounded-full bg-orange-500"></div>
+                                              <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">Connection Strings Override</Label>
+                                            </div>
+                                          </div>
+                                          <Textarea v-model="runner.connectionStringTemplate" 
+                                                    class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
+                                                    placeholder="<connectionStrings>&#10;  <add name=&quot;EntityFramework&quot; connectionString=&quot;Data Source=...;Initial Catalog=...;Integrated Security=True&quot; />&#10;</connectionStrings>" 
+                                                    :disabled="!canEditSelected" />
+                                          <div class="px-4 py-2 bg-primary/5 text-[9px] font-bold text-primary/60 uppercase tracking-widest border-t border-primary/5">
+                                            SQL Server and Database will still be automatically mapped.
+                                          </div>
                                        </div>
                                     </TabsContent>
                                   </Tabs>

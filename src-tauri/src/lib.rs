@@ -103,6 +103,7 @@ struct ProjectCandidate {
     startup_project: String,
     sln_count: usize,
     csproj_count: usize,
+    found_bat: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -565,6 +566,22 @@ fn discover_projects(root: String) -> Result<Vec<ProjectCandidate>, String> {
         }
     }
 
+    // Try to find potential batch directory
+    let batch_dir = root_canon.join("batch");
+    let batch_files: Vec<PathBuf> = if batch_dir.exists() && batch_dir.is_dir() {
+        fs::read_dir(&batch_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|ext| ext.to_str()).unwrap_or("").eq_ignore_ascii_case("bat"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let mut result = Vec::new();
     for (root_key, (slns, csprojs)) in groups {
         let group_root_path = PathBuf::from(&root_key);
@@ -586,6 +603,36 @@ fn discover_projects(root: String) -> Result<Vec<ProjectCandidate>, String> {
                 rp
             })
             .unwrap_or_default();
+
+        let startup_file_name = if !startup.is_empty() {
+             Path::new(&startup).file_stem().and_then(|s| s.to_str()).unwrap_or("")
+        } else {
+            ""
+        };
+
+        // Try to find a matching BAT file
+        let found_bat = if !startup_file_name.is_empty() {
+            // First look for exact stem match (e.g. SKSE0013.csproj -> SKSE0013.bat)
+            batch_files.iter()
+                .find(|p| p.file_stem().and_then(|s| s.to_str()).unwrap_or("").eq_ignore_ascii_case(startup_file_name))
+                .or_else(|| {
+                    // Then look for JE matching name if it's an RBA project
+                    if startup_file_name.to_ascii_lowercase().contains("receivebatchaction") {
+                         batch_files.iter().find(|p| p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().starts_with("je"))
+                    } else {
+                        None
+                    }
+                })
+                .map(|p| {
+                     p.strip_prefix(&root_canon)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .replace('/', "\\")
+                })
+        } else {
+            None
+        };
+
         let name = group_root_path
             .file_name()
             .and_then(|x| x.to_str())
@@ -597,6 +644,7 @@ fn discover_projects(root: String) -> Result<Vec<ProjectCandidate>, String> {
             startup_project: startup,
             sln_count: slns.len(),
             csproj_count: csprojs.len(),
+            found_bat,
         });
     }
     Ok(result)
