@@ -4,7 +4,7 @@ const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { onClickOutside } from "@vueuse/core";
-import { FolderOpen, ScanSearch, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Settings2, Database, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, Keyboard, FileDown } from "lucide-vue-next";
+import { FolderOpen, ScanSearch, Maximize2, User, Lock, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Settings2, Database, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, Keyboard, FileDown, Monitor } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
@@ -55,8 +55,8 @@ import {
 } from "@/lib/backlogAuth";
 import { useStore } from "@/composables/useStore";
 import { SyncService } from "@/lib/sync";
-import HotkeyLabel from "@/components/HotkeyLabel.vue";
 import HotkeyManager from "@/components/HotkeyManager.vue";
+import SqlEditor from "./components/SqlEditor.vue";
 import {
   Tooltip,
   TooltipContent,
@@ -126,7 +126,11 @@ const TERMINAL_THEMES = {
 
 const dark = ref(false);
 const activeTab = ref<"runner" | "sync">("runner");
-const mainScrollRef = ref<HTMLElement | null>(null);
+
+// SQL Connection Status State
+const sqlConnStatus = ref<'idle' | 'loading' | 'success' | 'error'>('idle');
+const sqlErrorMsg = ref('');
+const localHostname = ref("");
 
 const canBuild = computed(() => {
   return !runner.running && runner.projectRoot && runner.startupProject;
@@ -140,6 +144,12 @@ const canRun = computed(() => {
   return !runner.running && runner.projectRoot && runner.startupProject && runner.aliasExeName && runner.batFilePath;
 });
 
+
+type CommandResult = {
+  code: number;
+  stdout: string;
+  stderr: string;
+};
 
 type ProjectProfile = {
   id: string;
@@ -265,6 +275,7 @@ const loadedIssueTypesProjectKey = ref<string | null>(null);
 const CLOUDFLARE_WORKER_URL = "https://bsn-isync-sync-worker.ngtuonghy.workers.dev";
 
 const { setItem, getItem } = useStore();
+
 
 const syncService = computed(() => {
   if (!backlog.host || !backlog.token?.access_token) return null;
@@ -779,6 +790,7 @@ const isNamingSqlSnippet = ref(false);
 const namingSqlSnippetMode = ref<'create' | 'rename'>('create');
 const namingSqlSnippetValue = ref('');
 const namingSqlSnippetTitle = computed(() => namingSqlSnippetMode.value === 'create' ? 'Create New SQL Script' : 'Rename SQL Script');
+const isSqlSnippetFullscreen = ref(false);
 
 function startNamingSqlSnippet(mode: 'create' | 'rename') {
   namingSqlSnippetMode.value = mode;
@@ -894,11 +906,11 @@ const runner = reactive({
   batFilePath: "",
   runArgs: "",
   sqlSetupPath: "",
-  sqlServer: localStorage.getItem("bsn_isync:sql_server_host") || "",
-  sqlDatabase: "Arkbell_01",
-  sqlUser: "",
-  sqlPassword: "",
-  useWindowsAuth: true,
+  sqlServer: localStorage.getItem("bsn_isync:global_sql_server") || "",
+  sqlDatabase: localStorage.getItem("bsn_isync:global_sql_db") || "Arkbell_01",
+  sqlUser: localStorage.getItem("bsn_isync:global_sql_user") || "sa",
+  sqlPassword: localStorage.getItem("bsn_isync:global_sql_pass") || "ArkAdmin@2026",
+  useWindowsAuth: localStorage.getItem("bsn_isync:global_sql_winauth") === "false" ? false : true,
   sqlSnippets: [] as { id: string; name: string; content: string }[],
   activeSqlSnippetId: "",
   buildStatus: null as string | null,
@@ -966,6 +978,61 @@ const runner = reactive({
   deployPath: "",
 });
 
+// SQL Connection Diagnostics Logic
+let sqlCheckTimeout: any = null;
+
+async function checkSqlConnection(manual = false) {
+  if (!runner.sqlServer || !runner.sqlDatabase) {
+    sqlConnStatus.value = 'idle';
+    return;
+  }
+
+  sqlConnStatus.value = 'loading';
+  sqlErrorMsg.value = '';
+
+  try {
+    const result = await invoke<CommandResult>("run_sql_only", {
+      sqlContent: "SELECT @@VERSION",
+      server: runner.sqlServer,
+      database: runner.sqlDatabase,
+      user: runner.sqlUser,
+      password: runner.sqlPassword,
+      useWindowsAuth: runner.useWindowsAuth
+    });
+
+    if (result.code === 0) {
+      sqlConnStatus.value = 'success';
+      if (manual) toast.success("SQL Connection Successful", { description: result.stdout.split('\n')[0] });
+    } else {
+      sqlConnStatus.value = 'error';
+      sqlErrorMsg.value = result.stderr || result.stdout;
+      if (manual) {
+        toast.error("SQL Connection Failed", { 
+          description: sqlErrorMsg.value,
+          action: {
+            label: "Copy Error",
+            onClick: () => navigator.clipboard.writeText(sqlErrorMsg.value)
+          }
+        });
+      }
+    }
+  } catch (err: any) {
+    sqlConnStatus.value = 'error';
+    sqlErrorMsg.value = err.toString();
+    if (manual) toast.error("Execution Error", { description: sqlErrorMsg.value });
+  }
+}
+
+// Watch for SQL context changes to auto-test
+watch(
+  () => [runner.sqlServer, runner.sqlDatabase, runner.sqlUser, runner.sqlPassword, runner.useWindowsAuth],
+  () => {
+    if (sqlCheckTimeout) clearTimeout(sqlCheckTimeout);
+    sqlCheckTimeout = setTimeout(() => checkSqlConnection(false), 1000);
+  },
+  { deep: true }
+);
+
 const isRecordingShortcut = ref(false);
 const recordingAction = ref<string | null>(null);
 const showHotkeySettings = ref(false);
@@ -981,7 +1048,12 @@ onClickOutside(hotkeyContainerRef, () => {
 
 // --- Autosave logic ---
 watch(() => {
-  const { running, loadingTarget, logs, childPid, buildStatus, ...rest } = runner;
+  const { 
+    running, loadingTarget, logs, childPid, buildStatus, 
+    // Exclude SQL settings from profile persistence
+    sqlServer, sqlDatabase, sqlUser, sqlPassword, useWindowsAuth,
+    ...rest 
+  } = runner;
   return rest;
 }, (newVal, oldVal) => {
   // CRITICAL: Block auto-save if we are currently loading/applying a profile to avoid race syncs
@@ -989,14 +1061,6 @@ watch(() => {
     if (selectedSetupId.value) {
       if (canEditSelected.value) {
         saveCurrentToSelectedSetupProfile();
-      } else {
-        // Save local overrides for non-owners (Guest behavior)
-        const diff: any = {};
-        if (newVal.sqlServer !== oldVal.sqlServer) diff.sqlServer = newVal.sqlServer;
-        if (newVal.sqlDatabase !== oldVal.sqlDatabase) diff.sqlDatabase = newVal.sqlDatabase;
-        if (Object.keys(diff).length > 0) {
-          saveLocalOverride(selectedSetupId.value, diff);
-        }
       }
     }
   }
@@ -1025,7 +1089,9 @@ function resolveArgs(args: string) {
   const ms = pad(Math.floor(now.getMilliseconds() / 10)); // 2 digits
   const time8 = `${hms}${ms}`;
 
-  return args.replace(/{time}/g, time8);
+  const host6 = localHostname.value.substring(0, 6).toUpperCase();
+
+  return args.replace(/{time}/g, time8).replace(/{hostname}/g, host6);
 }
 
 const argsInputRef = ref<any>(null);
@@ -1050,8 +1116,30 @@ function insertTimePlaceholder() {
   });
 }
 
+function insertHostnamePlaceholder() {
+  const placeholder = "{hostname}";
+  const input = argsInputRef.value?.$el as HTMLInputElement;
+  if (!input) {
+    runner.runArgs += " " + placeholder;
+    return;
+  }
+
+  const start = input.selectionStart ?? runner.runArgs.length;
+  const end = input.selectionEnd ?? runner.runArgs.length;
+  const val = runner.runArgs;
+
+  runner.runArgs = val.substring(0, start) + placeholder + val.substring(end);
+
+  nextTick(() => {
+    input.focus();
+    const newPos = start + placeholder.length;
+    input.setSelectionRange(newPos, newPos);
+  });
+}
 
 function applyConfigSyncToTemplates() {
+  if (runner.loadingTarget) return;
+
   const msmq = runner.aliasExeName.replace(/\.exe$/i, "");
   
   const syncTemplate = (tpl: string) => {
@@ -1061,38 +1149,95 @@ function applyConfigSyncToTemplates() {
     // 0. ConnectionStrings Override
     if (runner.connectionStringTemplate && runner.connectionStringTemplate.trim()) {
       const connStrSection = runner.connectionStringTemplate.trim();
-      // Replace existing <connectionStrings> block if present, otherwise just keep going
-      // (Simplified regex matching for entire connectionStrings block)
       const sectionMatch = /<connectionStrings>[\s\S]*?<\/connectionStrings>/i;
       if (sectionMatch.test(t)) {
         t = t.replace(sectionMatch, connStrSection);
       }
     }
     
-    // 1. Replace Job.MsmqName value
-    t = t.replace(/(<add key="Job\.MsmqName" value=")([^"]*)(" \/>)/, `$1${msmq}$3`);
-    // 2. Replace Job.BatFilePath value
-    t = t.replace(/(<add key="Job\.BatFilePath" value=")([^"]*)(" \/>)/, `$1${runner.batFilePath || '.\\' }$3`);
+    // 1. AppSettings Sync
+    t = t.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
+    t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${runner.batFilePath || '.\\' }$3`);
     
-    // 3. Sync SQL Server into connectionStrings (Data Source & Server)
     if (runner.sqlServer) {
-      t = t.replace(/(Data Source=)([^;]*)(\b|;)/i, `$1${runner.sqlServer}$3`);
-      t = t.replace(/(Server=)([^;]*)(\b|;)/i, `$1${runner.sqlServer}$3`);
-      // Also sync Report.DBServer
-      t = t.replace(/(<add key="Report\.DBServer" value=")([^"]*)(" \/>)/, `$1${runner.sqlServer}$3`);
+        t = t.replace(/(<add\s+key="Report\.DBServer"\s+value=")([^"]*)("\s*\/>)/gi, `$1${runner.sqlServer}$3`);
     }
-    // 4. Sync SQL Database into connectionStrings (Initial Catalog)
-    if (runner.sqlDatabase) {
-      t = t.replace(/(Initial Catalog=)([^;]*)(\b)/i, `$1${runner.sqlDatabase}$3`);
-    }
+
+    // 2. ConnectionString Attributes Sync
+    t = t.replace(/(connectionString=")([^"]*)(")/gi, (_match, pre, cs, post) => {
+      const parts = cs.split(';').map((p: string) => p.trim()).filter((p: string) => p.length > 0);
+      const kv = {} as Record<string, string>;
+      const keyOrder: string[] = [];
+      
+      parts.forEach((p: string) => {
+        const eqIdx = p.indexOf('=');
+        if (eqIdx !== -1) {
+          const rawKey = p.substring(0, eqIdx).trim();
+          const val = p.substring(eqIdx + 1).trim();
+          const key = rawKey.toLowerCase();
+          kv[key] = val;
+          (kv as any)['orig_' + key] = rawKey;
+          keyOrder.push(key);
+        }
+      });
+
+      const setKey = (k: string, v: string) => {
+        const lk = k.toLowerCase();
+        if (!(lk in kv)) { keyOrder.push(lk); (kv as any)['orig_' + lk] = k; }
+        kv[lk] = v;
+      };
+
+      const removeKey = (k: string) => {
+        const lk = k.toLowerCase();
+        delete kv[lk];
+        const idx = keyOrder.indexOf(lk);
+        if (idx !== -1) keyOrder.splice(idx, 1);
+      };
+
+      if (runner.sqlServer) {
+        if ('server' in kv) {
+          setKey('Server', runner.sqlServer);
+          removeKey('Data Source');
+        } else {
+          setKey('Data Source', runner.sqlServer);
+        }
+      }
+      if (runner.sqlDatabase) setKey('Initial Catalog', runner.sqlDatabase);
+      
+      // Đồng bộ chế độ xác thực
+      if (runner.useWindowsAuth) {
+        setKey('Integrated Security', 'True');
+        // Gỡ bỏ Trusted_Connection vì Integrated Security đã đủ
+        removeKey('Trusted_Connection');
+        removeKey('TrustedConnection');
+        removeKey('User ID'); removeKey('Password'); removeKey('Uid'); removeKey('Pwd');
+      } else {
+        setKey('Integrated Security', 'False');
+        removeKey('Trusted_Connection');
+        removeKey('TrustedConnection');
+        if (runner.sqlUser) { setKey('User ID', runner.sqlUser); setKey('Password', runner.sqlPassword || ''); }
+      }
+
+      const resCs = keyOrder.map(k => `${(kv as any)['orig_' + k] || k}=${kv[k]}`).join(';') + (keyOrder.length > 0 ? ';' : '');
+      return `${pre}${resCs}${post}`;
+    });
+
     return t;
   };
 
-  runner.configTemplate = syncTemplate(runner.configTemplate);
-  runner.runConfigTemplate = syncTemplate(runner.runConfigTemplate);
+  const nConf = syncTemplate(runner.configTemplate);
+  if (nConf !== runner.configTemplate) runner.configTemplate = nConf;
+  const nRun = syncTemplate(runner.runConfigTemplate);
+  if (nRun !== runner.runConfigTemplate) runner.runConfigTemplate = nRun;
 }
-// Auto-sync both templates with UI inputs
-watch(() => [runner.aliasExeName, runner.batFilePath, runner.sqlServer, runner.sqlDatabase, runner.connectionStringTemplate], applyConfigSyncToTemplates);
+
+watch(
+  () => [
+    runner.aliasExeName, runner.batFilePath, runner.sqlServer, runner.sqlDatabase, 
+    runner.connectionStringTemplate, runner.useWindowsAuth, runner.sqlUser, runner.sqlPassword
+  ], 
+  applyConfigSyncToTemplates
+);
 
 // Auto-derive EXE Name from BAT Path silently
 watch(() => runner.batFilePath, (newPath) => {
@@ -1106,10 +1251,12 @@ watch(() => runner.batFilePath, (newPath) => {
   }
 });
 
-// Persist SQL Server globally directly
-watch(() => runner.sqlServer, (val) => {
-  localStorage.setItem('bsn_isync:sql_server_host', val || '');
-});
+// Persist SQL Settings globally (App-wide, not in profiles)
+watch(() => runner.sqlServer, (val) => localStorage.setItem('bsn_isync:global_sql_server', val || ''));
+watch(() => runner.sqlDatabase, (val) => localStorage.setItem('bsn_isync:global_sql_db', val || ''));
+watch(() => runner.sqlUser, (val) => localStorage.setItem('bsn_isync:global_sql_user', val || ''));
+watch(() => runner.sqlPassword, (val) => localStorage.setItem('bsn_isync:global_sql_pass', val || ''));
+watch(() => runner.useWindowsAuth, (val) => localStorage.setItem('bsn_isync:global_sql_winauth', String(val)));
 
 
 function makeProfileId() {
@@ -1244,11 +1391,9 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.deployPath = toAbs(setup.deployPath || "");
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
-  // Deliberately DO NOT override runner.sqlServer: keep it local per machine
-  runner.sqlDatabase = setup.sqlDatabase || "";
-  runner.sqlUser = setup.sqlUser || "";
-  runner.sqlPassword = setup.sqlPassword || "";
-  runner.useWindowsAuth = !!setup.useWindowsAuth;
+  runner.sqlSetupPath = setup.sqlSetupPath || "";
+  // SQL server/database/auth settings are now global and shared across app, not loaded from profiles
+  
   runner.configTemplate = setup.configTemplate || "";
   runner.runConfigTemplate = setup.runConfigTemplate || "";
   runner.connectionStringTemplate = setup.connectionStringTemplate || "";
@@ -1503,8 +1648,6 @@ watch(selectedSetupId, (next, prev) => {
     applySelectedSetupProfile(true);
     // On-click sync: Perform a PULL-only sync IMMEDIATELY (no debounce) for better feedback
     void syncProfilesWithCloudflare(next, true);
-    // Also load local overrides for the new profile
-    void loadLocalOverrides(next);
   }
 });
 
@@ -2043,6 +2186,7 @@ async function browseBatFile() {
 }
 
 
+
 async function loadConfigsForCurrentProject() {
   if (!runner.projectRoot || !runner.startupProject) return;
   
@@ -2174,14 +2318,6 @@ function onSnippetSelected(id: string | null) {
   }
 }
 
-function updateActiveSnippetContent(e: Event) {
-  const target = e.target as HTMLTextAreaElement;
-  const content = target.value;
-  const snippet = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
-  if (snippet) {
-    snippet.content = content;
-  }
-}
 
 function createNewSqlSnippet() {
   startNamingSqlSnippet('create');
@@ -2408,6 +2544,18 @@ async function initPty(id: 'main' | 'run', container: HTMLElement) {
 onMounted(async () => {
   // 1. Initialize environment status
   await checkEnv();
+
+  // Auto-check SQL connection on start if server is defined
+  if (runner.sqlServer && runner.sqlDatabase) {
+    checkSqlConnection(false);
+  }
+
+  // Fetch local hostname for shortcuts
+  try {
+    localHostname.value = await invoke("get_hostname");
+  } catch (e) {
+    console.error("Failed to fetch hostname:", e);
+  }
 
   // 2. Load UI state and Backlog login status from store
   await loadUIState();
@@ -2691,21 +2839,106 @@ onUnmounted(() => {
 
     <main class="h-[calc(100vh-61px)] flex flex-col px-0 pb-4 pt-2">
       <Tabs v-model="activeTab" class="flex-1 flex flex-col min-h-0">
-        <div class="mx-6 mb-2 flex items-center justify-start gap-4 bg-card p-2.5 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-none ring-1 ring-black/5 dark:ring-white/5 outline-none">
-          
-          <div class="flex items-center gap-2 w-full max-w-xl bg-muted/30 rounded-xl p-1.5 transition-all focus-within:bg-muted/50 ring-1 ring-transparent focus-within:ring-primary/20">
-            <div class="flex items-center gap-2 flex-1 min-w-0 px-2">
-              <FolderOpen class="size-3.5 text-muted-foreground shrink-0" />
-              <input v-model="runner.workspaceRoot" 
-                     class="bg-transparent border-0 h-6 text-xs flex-1 min-w-0 focus:outline-none placeholder:text-muted-foreground/50" 
-                     placeholder="Workspace Path (D:\workspace...)" />
+        <div class="mx-6 mb-2 bg-muted/20 backdrop-blur-3xl p-1.5 px-3 rounded-2xl shadow-sm ring-1 ring-black/5 dark:ring-white/5 transition-all duration-500">
+          <div class="flex items-center gap-5">
+            <!-- Workspace Group (Pro Balance) -->
+            <div class="flex items-center gap-3 min-w-0 flex-[0.7] pr-5 border-r border-white/5">
+              <div class="flex items-center gap-2.5 p-1 px-2 rounded-xl bg-white/5 border border-white/5 transition-all hover:bg-white/10 flex-1 min-w-0 group/ws">
+                <FolderOpen class="size-3.5 text-primary opacity-60 group-hover/ws:opacity-100 transition-opacity shrink-0" />
+                <input v-model="runner.workspaceRoot" 
+                       class="bg-transparent border-0 h-7 text-[11px] flex-1 min-w-0 focus:outline-none placeholder:text-muted-foreground/30 font-bold" 
+                       placeholder="Workspace..." />
+                <div class="flex items-center gap-1.5 shrink-0">
+                  <Button variant="ghost" class="h-6 text-[9.5px] px-2.5 hover:bg-white/10 transition-all font-black uppercase tracking-tight rounded-md" @click="pickProjectFolder">Browse</Button>
+                  <Button variant="secondary" class="h-7 text-[9.5px] px-3.5 font-black uppercase tracking-widest shadow-xl rounded-lg" @click="discoverProjects">
+                    <ScanSearch class="size-3.5 mr-1.5" /> SCAN
+                  </Button>
+                </div>
+              </div>
             </div>
-            <div class="flex items-center gap-1 border-l pl-1 ml-auto">
-              <Button variant="ghost" class="h-7 text-[11px] px-2.5 hover:bg-accent transition-all" @click="pickProjectFolder">Browse</Button>
-              <Button variant="secondary" class="h-7 text-[11px] px-3 font-semibold shadow-sm" @click="discoverProjects">
-                <ScanSearch class="size-3.5 mr-1" />
-                Scan
-              </Button>
+
+            <!-- Global SQL Context Group (Pro Balance) -->
+            <div class="flex items-center gap-3 flex-1 min-w-0">
+              <div class="flex items-center gap-2 shrink-0 pr-4 border-r border-white/5">
+                <Database class="size-3.5 text-primary opacity-50" />
+                <span class="text-[10px] font-black uppercase tracking-[0.2em] text-primary/60">SQL CONTEXT</span>
+              </div>
+
+              <!-- Integrated SQL Context Group (Server & DB) -->
+              <div class="flex items-center gap-0.5 bg-white/5 border border-white/10 rounded-xl p-1 shadow-inner ring-1 ring-white/5">
+                <div class="flex items-center gap-2 px-3 py-0.5 bg-background/40 rounded-lg border border-white/5 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 transition-all min-w-[120px]">
+                  <Server class="size-3 text-primary/40" />
+                  <input v-model="runner.sqlServer" 
+                         class="bg-transparent border-0 h-6 w-full text-[10px] font-mono font-black focus:outline-none placeholder:text-muted-foreground/20" 
+                         placeholder="Server..." />
+                </div>
+                <div class="w-px h-4 bg-white/10 mx-1"></div>
+                <div class="flex items-center gap-2 px-3 py-0.5 bg-background/40 rounded-lg border border-white/5 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 transition-all min-w-[120px]">
+                  <Database class="size-3 text-primary/40" />
+                  <input v-model="runner.sqlDatabase" 
+                         class="bg-transparent border-0 h-6 w-full text-[10px] font-mono font-black focus:outline-none placeholder:text-muted-foreground/20" 
+                         placeholder="Database..." />
+                </div>
+
+                <!-- SQL Connection Diagnosis Indicator -->
+                <div class="flex items-center gap-1.5 px-1.5 shrink-0 border-l border-white/10 ml-0.5">
+                  <div class="relative group/sql-status">
+                    <div v-if="sqlConnStatus === 'loading'" class="size-2 rounded-full bg-amber-500 animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.5)]"></div>
+                    <div v-else-if="sqlConnStatus === 'success'" class="size-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
+                    <div v-else-if="sqlConnStatus === 'error'" class="size-2 rounded-full bg-destructive shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div>
+                    <div v-else class="size-2 rounded-full bg-muted shadow-inner opacity-40"></div>
+                    
+                    <!-- Error Tooltip (Simplified) -->
+                    <div v-if="sqlConnStatus === 'error' && sqlErrorMsg" class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-2 bg-destructive text-white text-[9px] font-bold rounded-lg shadow-xl opacity-0 group-hover/sql-status:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
+                      {{ sqlErrorMsg.length > 50 ? sqlErrorMsg.substring(0, 50) + '...' : sqlErrorMsg }}
+                      <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-1 border-4 border-transparent border-t-destructive"></div>
+                    </div>
+                  </div>
+
+                  <Button variant="ghost" size="icon" class="size-6 rounded-md hover:bg-white/10 transition-all" @click="() => checkSqlConnection(true)" :disabled="sqlConnStatus === 'loading' || !runner.sqlServer || !runner.sqlDatabase" title="Test SQL Connection">
+                    <RefreshCw class="size-3 text-primary/60 hover:text-primary transition-colors" :class="sqlConnStatus === 'loading' ? 'animate-spin' : ''" />
+                  </Button>
+                </div>
+              </div>
+
+              <!-- Pro Auth Mode Toggle -->
+              <div class="flex items-center gap-1.5 bg-white/5 p-1 rounded-xl border border-white/5 shadow-inner">
+                <button
+                  class="px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all"
+                  :class="runner.useWindowsAuth ? 'bg-primary text-primary-foreground shadow-lg scale-105' : 'text-muted-foreground hover:text-white opacity-40 hover:opacity-100'"
+                  @click="runner.useWindowsAuth = true"
+                >WIN</button>
+                <button
+                  class="px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all"
+                  :class="!runner.useWindowsAuth ? 'bg-primary text-primary-foreground shadow-lg scale-105' : 'text-muted-foreground hover:text-white opacity-40 hover:opacity-100'"
+                  @click="runner.useWindowsAuth = false"
+                >SQL</button>
+              </div>
+
+              <!-- Integrated Credentials (SQL Auth) -->
+              <transition 
+                enter-active-class="transition duration-300 ease-out" 
+                enter-from-class="transform translate-x-4 opacity-0 scale-95" 
+                enter-to-class="transform translate-x-0 opacity-100 scale-100"
+                leave-active-class="transition duration-200 ease-in"
+                leave-from-class="transform translate-x-0 opacity-100 scale-100"
+                leave-to-class="transform translate-x-4 opacity-0 scale-95"
+              >
+                <div v-if="!runner.useWindowsAuth" class="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl p-1 shadow-inner ring-1 ring-white/5 mr-1">
+                  <div class="flex items-center gap-2 px-2 py-0.5 bg-background/40 rounded-lg border border-white/5 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 transition-all">
+                    <User class="size-3 text-primary/40" />
+                    <input v-model="runner.sqlUser" 
+                           class="bg-transparent border-0 h-6 w-16 text-[10px] font-mono font-black focus:outline-none placeholder:text-muted-foreground/20" 
+                           placeholder="User" />
+                  </div>
+                  <div class="flex items-center gap-2 px-2 py-0.5 bg-background/40 rounded-lg border border-white/5 focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 transition-all">
+                    <Lock class="size-3 text-primary/40" />
+                    <input v-model="runner.sqlPassword" 
+                           class="bg-transparent border-0 h-6 w-24 text-[10px] font-mono font-black focus:outline-none placeholder:text-muted-foreground/20" 
+                           placeholder="Password" />
+                  </div>
+                </div>
+              </transition>
             </div>
           </div>
         </div>
@@ -3089,64 +3322,44 @@ onUnmounted(() => {
                               <span class="opacity-50 normal-case tracking-normal font-medium text-[8.5px] lowercase">(passed to .bat during TEST)</span>
                             </Label>
                             <div class="relative flex items-center group/args">
-                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-14 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
+                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
                               <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
                                 <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="!canEditSelected">
                                   <Clock class="size-3" />
+                                </Button>
+                                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder" :disabled="!canEditSelected">
+                                  <Monitor class="size-3" />
                                 </Button>
                               </div>
                             </div>
                           </div>
 
                           <div class="space-y-4 pb-2 border-t border-white/5 pt-3">
-                            <!-- Database Connection Setup -->
-                            <div class="space-y-2">
-                              <div class="flex items-center justify-between px-0.5">
-                                <div class="flex items-center gap-1.5">
-                                  <Database class="size-3.5 text-primary opacity-80" />
-                                  <Label class="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Database</Label>
+                            <!-- SQL Snippets & Execution -->
+                            <div class="space-y-1.5 min-h-0">
+                              <div class="flex items-center justify-between px-0.5 mb-1.5">
+                                <Label class="text-[9px] text-muted-foreground uppercase font-black tracking-widest flex items-center gap-1.5">
+                                  <Code2 class="size-3.5 text-primary opacity-80" /> SQL Scripts
+                                </Label>
+
+                                <div class="flex items-center gap-2">
+                                  <span class="text-[8px] font-black py-0.5 px-2 rounded bg-primary/10 text-primary uppercase tracking-tighter">Profile-specific scripts</span>
+                                  <div class="w-px h-3 bg-white/10"></div>
+                                  <Button variant="ghost" size="sm" class="h-7 px-3.5 text-[9px] font-black tracking-widest text-cyan-500 hover:bg-cyan-500/10 hover:text-cyan-500 transition-all flex items-center gap-2 rounded-lg group/full border border-cyan-500/20 bg-cyan-500/5 shadow-sm" title="Open Fullscreen Editor (Serious Mode)" @click="isSqlSnippetFullscreen = true">
+                                    <Maximize2 class="size-3 group-hover/full:scale-110 transition-transform" />
+                                    FULLSCREEN
+                                  </Button>
                                 </div>
-                                <Button v-if="!canEditSelected && selectedSetupId && (isServerOverridden || isDatabaseOverridden)" 
-                                        variant="ghost" 
-                                        size="sm" 
-                                        class="h-4 px-1.5 text-[8px] font-black text-primary hover:bg-primary/10 transition-all uppercase tracking-tighter" 
-                                        @click="resetLocalOverrides(selectedSetupId)">
-                                  Reset to Shared
+                              </div>
+                              <div class="flex gap-1.5">
+                                <Button variant="ghost" size="sm" class="h-5 px-2.5 py-0 text-[8.5px] font-black tracking-widest text-[#FF7500] hover:bg-[#FF7500]/10 hover:text-[#FF7500] rounded-md shadow-sm border border-[#FF7500]/20 bg-[#FF7500]/5" title="Run All Scripts" @click="runAllSqlSnippets" :disabled="!canExecuteSelected || runner.sqlSnippets.length === 0">
+                                  <ListTree class="size-2.5 mr-1" /> RUN ALL
+                                </Button>
+                                <Button variant="ghost" size="sm" class="h-5 px-2.5 py-0 text-[8.5px] font-black tracking-widest text-primary hover:bg-primary/10 hover:text-primary rounded-md shadow-sm border border-primary/20 bg-primary/5" title="Run Current Script" @click="runSqlOnly" :disabled="!canExecuteSelected || runner.sqlSnippets.length === 0">
+                                  <Play class="size-2.5 mr-1" /> RUN
                                 </Button>
                               </div>
-                              <div class="flex flex-col gap-1.5">
-                                <div class="relative flex items-center">
-                                  <Input v-model="runner.sqlServer" placeholder="Server Host (e.g. localhost\SQLEXPRESS)" class="h-8 text-[10px] bg-background/50 border-input font-mono pr-12 w-full" />
-                                  <div v-if="isServerOverridden" class="absolute right-2 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[7px] font-black uppercase tracking-tighter animate-in fade-in zoom-in duration-300">Local</div>
-                                </div>
-                                <div class="relative flex items-center">
-                                  <Input v-model="runner.sqlDatabase" placeholder="Initial Catalog (e.g. MyDatabase)" class="h-8 text-[10px] bg-background/50 border-input font-mono pr-12 w-full" />
-                                  <div v-if="isDatabaseOverridden" class="absolute right-2 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[7px] font-black uppercase tracking-tighter animate-in fade-in zoom-in duration-300">Local</div>
-                                </div>
-                              </div>
-                              <div class="flex items-center space-x-2 pt-1 pl-0.5">
-                                <Switch id="winAuth" v-model="runner.useWindowsAuth" :disabled="!canEditSelected" class="scale-75 origin-left" />
-                                <Label for="winAuth" class="text-[9px] font-bold text-muted-foreground uppercase tracking-widest cursor-pointer">Windows Auth</Label>
-                              </div>
-                              <div v-if="!runner.useWindowsAuth" class="flex gap-1.5 animate-in slide-in-from-top-2">
-                                <Input v-model="runner.sqlUser" placeholder="Username" class="h-8 flex-1 text-[10px] bg-background/50 border-input" :disabled="!canEditSelected" />
-                                <Input v-model="runner.sqlPassword" type="password" placeholder="Password" class="h-8 flex-1 text-[10px] bg-background/50 border-input" :disabled="!canEditSelected" />
-                              </div>
                             </div>
-
-                            <!-- SQL Snippets & Execution -->
-                            <div class="space-y-1.5">
-                              <div class="flex items-center justify-between px-0.5 mb-1.5">
-                                <Label class="text-[9px] text-muted-foreground uppercase font-black tracking-widest flex items-center gap-1.5"><Code2 class="size-3.5 text-primary opacity-80" /> SQL Scripts</Label>
-                                <div class="flex gap-1.5">
-                                  <Button variant="ghost" size="sm" class="h-5 px-2 py-0 text-[8.5px] font-black tracking-widest text-[#FF7500] hover:bg-[#FF7500]/10 hover:text-[#FF7500] rounded-md shadow-sm border border-[#FF7500]/20 bg-[#FF7500]/5" title="Run All Scripts sequentially" @click="runAllSqlSnippets" :disabled="!canExecuteSelected || runner.sqlSnippets.length === 0">
-                                    <ListTree class="size-2.5 mr-1" /> RUN ALL
-                                  </Button>
-                                  <Button variant="ghost" size="sm" class="h-5 px-2 py-0 text-[8.5px] font-black tracking-widest text-primary hover:bg-primary/10 hover:text-primary rounded-md shadow-sm border border-primary/20 bg-primary/5" title="Run Current Script" @click="runSqlOnly" :disabled="!canExecuteSelected || runner.sqlSnippets.length === 0">
-                                    <Play class="size-2.5 mr-1" /> RUN
-                                  </Button>
-                                </div>
-                              </div>
                               
                               <div class="flex items-center gap-1.5 p-1.5 rounded-xl bg-muted/40 shadow-inner border border-primary/5">
                                 <Select v-model="runner.activeSqlSnippetId" @update:model-value="(v: any) => onSnippetSelected(v)" :disabled="runner.sqlSnippets.length === 0">
@@ -3176,19 +3389,24 @@ onUnmounted(() => {
                                 </Button>
                               </div>
 
-                              <Textarea v-model="runner.sqlSetupPath" 
-                                        @input="updateActiveSnippetContent"
-                                        class="min-h-[200px] font-mono text-[10px] p-2.5 leading-relaxed bg-background/50 border-input focus:border-primary/30 rounded-lg resize-y custom-scrollbar mt-1.5" 
-                                        placeholder="-- Write SQL queries here..." 
-                                        :disabled="!canEditSelected || runner.sqlSnippets.length === 0" />
+                              <SqlEditor
+                                v-model="runner.sqlSetupPath"
+                                placeholder="-- Write SQL queries here..."
+                                height="260px"
+                                font-size="11px"
+                                :disabled="!canEditSelected || runner.sqlSnippets.length === 0"
+                                @change="(v: string) => { 
+                                   const s = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
+                                   if(s) s.content = v;
+                                }"
+                              />
                             </div>
                           </div>
 
                         </div>
                     </div>
                   </div>
-                </div>
-              </section>
+                </section>
 
             </div>
 
@@ -3433,6 +3651,98 @@ onUnmounted(() => {
           <Button class="h-11 px-8 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-xl shadow-primary/20 bg-primary hover:bg-primary/90" @click="commitSqlSnippetName">
             Save Script
           </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Professional Fullscreen SQL Editor Dialog -->
+    <Dialog :open="isSqlSnippetFullscreen" @update:open="val => isSqlSnippetFullscreen = val">
+      <DialogContent class="max-w-none! sm:max-w-none! w-[90vw]! h-[88vh] p-0 border-0 bg-transparent shadow-none overflow-hidden flex flex-col pointer-events-auto transition-all duration-500 [&>button]:hidden">
+        <div class="flex-1 bg-background/95 backdrop-blur-3xl border border-border shadow-[0_0_100px_rgba(0,0,0,0.2)] rounded-[24px] overflow-hidden flex flex-col ring-1 ring-black/5 dark:ring-white/10 animate-in zoom-in-95 duration-500">
+          <!-- Pro Toolbar Header (Theme Synced) -->
+          <div class="h-14 px-6 border-b border-border bg-muted/20 flex items-center justify-between shrink-0">
+            <!-- Left: Brand -->
+            <div class="flex items-center gap-3">
+              <div class="size-9 rounded-xl bg-primary/10 flex items-center justify-center text-primary shadow-sm border border-primary/20">
+                <Code2 class="size-5" />
+              </div>
+              <div class="flex flex-col">
+                <span class="text-[12px] font-black uppercase tracking-[0.2em] text-foreground">SQL PRO ENGINE</span>
+                <span class="text-[8px] font-black text-muted-foreground/60 uppercase tracking-tighter">Synchronized Environment</span>
+              </div>
+            </div>
+
+            <!-- Center: Snippet Sync & Context -->
+            <div class="flex items-center gap-4 flex-1 max-w-[550px] mx-6">
+              <div class="flex-1 flex items-center gap-2 bg-background border border-border p-1 rounded-xl shadow-sm group/sync focus-within:ring-2 focus-within:ring-primary/20 transition-all">
+                <Select v-model="runner.activeSqlSnippetId" @update:model-value="(v: any) => onSnippetSelected(v)">
+                  <SelectTrigger class="h-8 flex-1 text-[10.5px] font-bold bg-muted/30 border-0 rounded-lg hover:bg-muted/50 transition-all">
+                    <SelectValue placeholder="Select script..." />
+                  </SelectTrigger>
+                  <SelectContent class="max-w-[300px] shadow-2xl">
+                    <SelectItem v-for="snippet in runner.sqlSnippets" :key="snippet.id" :value="snippet.id" class="text-[10.5px] font-bold py-2">
+                      <div class="flex items-center gap-2">
+                        <Code2 class="size-3.5 text-primary/70" />
+                        <span>{{ snippet.name }}</span>
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                
+                <div class="w-px h-5 bg-border mx-1"></div>
+                
+                <div class="flex items-center gap-3 px-2 shrink-0">
+                  <div class="flex items-center gap-1.5 grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all">
+                    <Server class="size-3 text-primary" />
+                    <span class="text-[10px] font-mono font-bold truncate max-w-[80px]">{{ runner.sqlServer || '?' }}</span>
+                  </div>
+                  <div class="flex items-center gap-1.5 grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all">
+                    <Database class="size-3 text-primary" />
+                    <span class="text-[10px] font-mono font-bold truncate max-w-[80px]">{{ runner.sqlDatabase || '?' }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Action Controls -->
+            <div class="flex items-center gap-2">
+              <Button variant="ghost" class="h-9 px-4 text-[9px] font-black uppercase tracking-widest text-primary hover:bg-primary/5 transition-all rounded-lg border border-primary/20 bg-primary/5 group/run-all min-w-[110px]" @click="runAllSqlSnippets" :disabled="runner.sqlSnippets.length === 0">
+                <ListTree class="size-3.5 opacity-70 group-hover/run-all:scale-110 transition-transform mr-1.5" />
+                Run All
+              </Button>
+              <Button class="h-9 px-5 text-[9px] font-black uppercase tracking-widest bg-primary hover:bg-primary/90 text-primary-foreground flex items-center gap-1.5 rounded-lg group/run shadow-lg shadow-primary/10 min-w-[120px]" @click="runSqlOnly" :disabled="runner.sqlSnippets.length === 0">
+                <Play class="size-3.5 fill-current group-hover/run:scale-110 transition-transform" />
+                Run Script
+              </Button>
+              
+              <div class="w-px h-6 bg-border mx-2"></div>
+              
+              <Button variant="ghost" size="icon" class="size-9 rounded-xl hover:bg-destructive/10 hover:text-destructive transition-all border border-transparent hover:border-destructive/20" @click="isSqlSnippetFullscreen = false">
+                <X class="size-5" />
+              </Button>
+            </div>
+          </div>
+
+          <!-- Code Editor Area -->
+          <div class="flex-1 min-h-0 relative">
+            <SqlEditor
+              v-model="runner.sqlSetupPath"
+              :is-dark="dark"
+              height="100%"
+              font-size="14px"
+              placeholder="-- Write your SQL pro queries here..."
+              @change="(v: string) => { 
+                 const s = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
+                 if(s) s.content = v;
+              }"
+            />
+            
+            <!-- Floating Indicator -->
+            <div class="absolute bottom-6 left-6 flex items-center gap-2 bg-background/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-border shadow-sm opacity-60 hover:opacity-100 transition-opacity pointer-events-none">
+              <div class="size-2 rounded-full" :class="dark ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-primary shadow-[0_0_8px_rgba(var(--primary),0.5)]'"></div>
+              <span class="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground/80">PRO Mode Active</span>
+            </div>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

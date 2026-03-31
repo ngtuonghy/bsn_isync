@@ -1003,21 +1003,37 @@ fn dotnet_run_start(
     
     let cmd_str = if target == "bat" {
         if let Some(bat_path_str) = request.bat_file_path.as_ref().filter(|s| !s.trim().is_empty()) {
-            let bat_path = std::path::Path::new(bat_path_str);
+            let mut final_path = bat_path_str.clone();
+            let mut is_temp = false;
+
+            // Auto-detect: raw batch code -> save to temp .bat and mark for cleanup
+            if is_looks_like_batch_code(&final_path) && !Path::new(&final_path).exists() {
+                final_path = prepare_batch_temp_file(final_path)?;
+                is_temp = true;
+            }
+
+            let bat_path = std::path::Path::new(&final_path);
             let parent = bat_path.parent().and_then(|p| p.to_str()).unwrap_or("");
-            let file_name = bat_path.file_name().and_then(|f| f.to_str()).unwrap_or(bat_path_str);
+            let file_name = bat_path.file_name().and_then(|f| f.to_str()).unwrap_or(&final_path);
+
+            // Cleanup suffix: delete temp file after run in PowerShell
+            let cleanup = if is_temp {
+                format!("\r\nRemove-Item '{}' -Force -ErrorAction SilentlyContinue", final_path.replace('\'' , "''"))
+            } else {
+                String::new()
+            };
 
             if !parent.is_empty() {
                 if run_args.is_empty() {
-                    format!("cd '{}'; & './{}'\r\n", parent, file_name)
+                    format!("cd '{}'; & './{}'{}\r\n", parent, file_name, cleanup)
                 } else {
-                    format!("cd '{}'; & './{}' {}\r\n", parent, file_name, run_args)
+                    format!("cd '{}'; & './{}' {}{}\r\n", parent, file_name, run_args, cleanup)
                 }
             } else {
                 if run_args.is_empty() {
-                    format!("& '{}'\r\n", bat_path_str)
+                    format!("& '{}'{}\r\n", final_path, cleanup)
                 } else {
-                    format!("& '{}' {}\r\n", bat_path_str, run_args)
+                    format!("& '{}' {}{}\r\n", final_path, run_args, cleanup)
                 }
             }
         } else {
@@ -1130,6 +1146,18 @@ fn sync_asset(request: SyncAssetRequest) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
+fn get_hostname() -> String {
+    #[cfg(windows)]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "UNKNOWN-PC".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("HOSTNAME").unwrap_or_else(|_| "UNKNOWN-PC".to_string())
+    }
+}
+
+#[tauri::command]
 fn run_sql_only(
     sql_content: String,
     server: Option<String>,
@@ -1165,6 +1193,41 @@ fn prepare_sql_temp_file(content: String) -> Result<String, String> {
     bom_content.extend_from_slice(b"\xEF\xBB\xBF");
     bom_content.extend_from_slice(content.as_bytes());
     fs::write(&tp, bom_content).map_err(|e| format!("Lỗi tạo file SQL tạm: {}", e))?;
+    Ok(tp.to_string_lossy().to_string())
+}
+
+fn is_looks_like_batch_code(input: &str) -> bool {
+    let s = input.trim();
+    if s.is_empty() { return false; }
+    if s.contains('\n') || s.contains('\r') { return true; }
+    
+    let lower = s.to_ascii_lowercase();
+    if lower.starts_with("@echo") || 
+       lower.starts_with("rem ") || 
+       lower.starts_with("set ") ||
+       lower.starts_with("chcp ") ||
+       lower.starts_with("cd /") ||
+       lower.contains(" | ") ||
+       lower.contains(" > ") ||
+       lower.contains(" & ") {
+        return true;
+    }
+    false
+}
+
+#[tauri::command]
+fn prepare_batch_temp_file(content: String) -> Result<String, String> {
+    let temp_dir = std::env::temp_dir();
+    let file_name = format!("bsn_isync_batch_{}.bat", std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
+    let tp = temp_dir.join(file_name);
+    
+    // Windows batch files often prefer system default encoding or UTF-8 with BOM.
+    // For modern tools (including powershell which we use in PTY), UTF-8 with BOM should work.
+    let mut bom_content = Vec::with_capacity(content.len() + 3);
+    bom_content.extend_from_slice(b"\xEF\xBB\xBF");
+    bom_content.extend_from_slice(content.as_bytes());
+    
+    fs::write(&tp, bom_content).map_err(|e| format!("Error creating temporary BAT file: {}", e))?;
     Ok(tp.to_string_lossy().to_string())
 }
 
@@ -1268,11 +1331,13 @@ pub fn run() {
             sync_asset,
             get_backlog_config,
             get_backlog_auth_url,
+            get_hostname,
 
             backlog_oauth_exchange,
             backlog_oauth_refresh,
             run_sql_only,
             prepare_sql_temp_file,
+            prepare_batch_temp_file,
             open_file,
             deploy_project_config,
             fetch_project_config,
