@@ -1278,49 +1278,6 @@ function setupStorageKey() {
   return `bsn_isync:project_profiles`;
 }
 
-function localOverrideStorageKey(profileId: string) {
-  return `bsn_isync:local_overrides:${profileId}`;
-}
-
-const localOverrides = ref<Record<string, { sqlServer?: string; sqlDatabase?: string }>>({});
-
-async function loadLocalOverrides(profileId: string) {
-  if (!profileId) return;
-  try {
-    const raw = await getItem<any>(localOverrideStorageKey(profileId));
-    if (raw) {
-      localOverrides.value[profileId] = raw;
-    }
-  } catch (e) {
-    console.error("Failed to load local overrides", e);
-  }
-}
-
-async function saveLocalOverride(profileId: string, data: { sqlServer?: string; sqlDatabase?: string }) {
-  if (!profileId) return;
-  const key = localOverrideStorageKey(profileId);
-  const current = localOverrides.value[profileId] || {};
-  const updated = { ...current, ...data };
-  localOverrides.value[profileId] = updated;
-  await setItem(key, updated);
-}
-
-async function resetLocalOverrides(profileId: string) {
-  if (!profileId) return;
-  delete localOverrides.value[profileId];
-  await setItem(localOverrideStorageKey(profileId), null);
-  applySelectedSetupProfile(true);
-}
-
-const isServerOverridden = computed(() => {
-  if (!selectedSetupId.value) return false;
-  return !!localOverrides.value[selectedSetupId.value]?.sqlServer;
-});
-
-const isDatabaseOverridden = computed(() => {
-  if (!selectedSetupId.value) return false;
-  return !!localOverrides.value[selectedSetupId.value]?.sqlDatabase;
-});
 
 function buildSetupFromRunner(name: string): ProjectProfile {
   // Helper to convert to relative if possible
@@ -1380,7 +1337,6 @@ function applySetupToRunner(setup: ProjectProfile) {
     const ws = runner.workspaceRoot.replace(/[\\/]$/, "");
     return ws ? `${ws}\\${p}` : p;
   };
-
   // 1. Resolve Paths (handle both absolute migration and relative expansion)
   runner.projectRoot = normalizePath(toAbs(setup.projectRoot || ""));
   selectedProjectRoot.value = runner.projectRoot;
@@ -1428,12 +1384,7 @@ function applySetupToRunner(setup: ProjectProfile) {
   // Implicitly populate configs from Project Source Files
   loadConfigsForCurrentProject();
 
-  // 2. Apply Local Overrides if any
-  const overrides = localOverrides.value[setup.id];
-  if (overrides) {
-    if (overrides.sqlServer) runner.sqlServer = overrides.sqlServer;
-    if (overrides.sqlDatabase) runner.sqlDatabase = overrides.sqlDatabase;
-  }
+
 }
 
 async function loadSetupsForCurrentRoot() {
