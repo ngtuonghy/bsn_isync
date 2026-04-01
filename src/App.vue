@@ -271,6 +271,7 @@ async function checkForUpdates(manual = false) {
 const isNotificationEnabled = ref(true);
 const syncStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 const isApplyingProfile = ref(false);
+const deletedProfileIds = ref<Map<string, number>>(new Map()); // id -> timestamp
 const loadedIssueTypesProjectKey = ref<string | null>(null);
 const CLOUDFLARE_WORKER_URL = "https://bsn-isync-sync-worker.ngtuonghy.workers.dev";
 
@@ -402,6 +403,7 @@ async function saveUIState() {
       shortcuts: runner.shortcuts,
       backlog: {
         host: backlog.host,
+        apiKey: backlog.apiKey,
         token: backlog.token,
         profile: backlog.profile,
         updatedAt: backlog.updatedAt,
@@ -679,6 +681,7 @@ function handleBacklogLogout() {
 
 // background refresh timer
 let backlogRefreshInterval: number | undefined;
+let cloudSyncInterval: number | undefined;
 
 async function ensureValidBacklogToken() {
   if (!backlog.token || !backlog.token.refresh_token) return true;
@@ -1468,6 +1471,7 @@ async function saveSetupsForCurrentRoot() {
   // Trigger Incremental Cloudflare Sync for the active profile
   // CRITICAL: Skip sync if we are currently APPLYING a profile to avoid feedback loops
   if (!isApplyingProfile.value) {
+    // If we're updating a profile, trigger incremental sync
     triggerSync(selectedSetupId.value);
   }
 }
@@ -1478,12 +1482,17 @@ let lastSyncContext = { targetId: undefined as string | undefined, skipPush: fal
 function triggerSync(id?: string, skipPush = false) {
   if (syncTimer) clearTimeout(syncTimer);
   
-  lastSyncContext = { targetId: id, skipPush };
+  // If we had a pending FULL sync (id is undefined), and now an INCREMENTAL sync (id is set) comes, 
+  // we must stay as a FULL sync to ensure global settings and all profiles are pushed.
+  const currentTargetId = (lastSyncContext.targetId === undefined && syncTimer) ? undefined : id;
+  
+  lastSyncContext = { targetId: currentTargetId, skipPush };
   
   syncTimer = window.setTimeout(async () => {
     syncStatus.value = lastSyncContext.skipPush ? 'idle' : 'saving';
     await syncProfilesWithCloudflare(lastSyncContext.targetId, lastSyncContext.skipPush);
-  }, 2000); // 4-second precise physiological debounce matching human typing pause
+    syncTimer = undefined;
+  }, 2000); // 2-second debounce matching human typing pause
 }
 
 /**
@@ -1503,7 +1512,21 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
     // 1. PUSH (Incremental or Full) - Parallelized for Speed
     if (!skipPush) {
       const pushTasks = [];
-      if (targetId) {
+      
+      // ALWAYS push global settings if we have them, as they are small and critical
+      pushTasks.push(syncService.value.upsertProfile({
+        id: "__global_backlog_settings__",
+        name: "Global Backlog Settings",
+        content: {
+          host: backlog.host,
+          apiKey: backlog.apiKey,
+          token: backlog.token,
+          profile: backlog.profile,
+          updatedAt: backlog.updatedAt || Date.now()
+        }
+      }));
+
+      if (targetId && targetId !== "__global_backlog_settings__") {
         const profile = setupProfiles.value.find(p => p.id === targetId);
         if (profile && profile.owner === currentUser.value) {
           pushTasks.push(syncService.value.upsertProfile({
@@ -1512,7 +1535,7 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
             content: profile
           }));
         }
-      } else {
+      } else if (!targetId) {
         // FULL PUSH: Run all upserts in parallel
         setupProfiles.value
           .filter(p => p.owner === currentUser.value)
@@ -1521,26 +1544,13 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
             name: p.name,
             content: p
           })));
-          
-        // Also push Backlog Global Settings
-        pushTasks.push(syncService.value.upsertProfile({
-          id: "__global_backlog_settings__",
-          name: "Global Backlog Settings",
-          content: {
-            host: backlog.host,
-            token: backlog.token,
-            profile: backlog.profile,
-            updatedAt: backlog.updatedAt || Date.now()
-          }
-        }));
       }
       await Promise.all(pushTasks);
     }
 
     // 2. PULL & CONFLICT RESOLUTION (Time-based Pull)
-    const cloudResults = targetId 
-      ? [await syncService.value.getProfile(targetId)].filter(Boolean)
-      : await syncService.value.getProfiles();
+    // Always pull EVERYTHING to stay in sync with other machines
+    const cloudResults = await syncService.value.getProfiles();
 
     const localMap = new Map(setupProfiles.value.map(p => [p.id, p]));
     let profilesChanged = false;
@@ -1555,10 +1565,20 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
         const cloudUpdateAt = content.updatedAt || 0;
         const localUpdateAt = backlog.updatedAt || 0;
         if (cloudUpdateAt > localUpdateAt) {
+          // If we are currently logging in or performing OAuth, skip overwriting local state
+          // to avoid interrupting the flow.
+          if (backlog.status === 'loading') return;
+          
           Object.assign(backlog, content);
           backlogChanged = true;
         }
         return;
+      }
+      
+      // Skip recently deleted profiles locally to avoid "pulling them back" (TTL 2 minutes)
+      const deletedAt = deletedProfileIds.value.get(cp.id);
+      if (deletedAt && (Date.now() - deletedAt < 2 * 60 * 1000)) {
+         return;
       }
       
       const cloudUpdateAt = content.updatedAt || 0;
@@ -1580,6 +1600,13 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
           profilesChanged = true;
         }
       }
+    });
+
+    // Finalize: Clear the tombstone for any IDs that are NO LONGER on the cloud
+    // This allows re-adding the profile with the same ID if needed in the future
+    const cloudIds = new Set(cloudResults.map(cp => cp.id));
+    deletedProfileIds.value.forEach((_, id) => {
+       if (!cloudIds.has(id)) deletedProfileIds.value.delete(id);
     });
 
     if (profilesChanged) {
@@ -1615,7 +1642,7 @@ watch([selectedOwner, profileSearch, profileScope, setupProfiles], () => {
   ensureVisibleSelection();
 }, { deep: true });
 
-watch([activeTab, dark, selectedSetupId, selectedOwner, profileScope, () => runner.workspaceRoot, () => backlog.host, () => backlog.token, () => backlog.profile], () => {
+watch([activeTab, dark, selectedSetupId, selectedOwner, profileScope, () => runner.workspaceRoot, () => backlog.host, () => backlog.apiKey, () => backlog.token, () => backlog.profile], () => {
   saveUIState();
 }, { deep: true });
 
@@ -1829,6 +1856,10 @@ async function deleteSelectedSetupProfile() {
   if (idx < 0) return;
   
   const profileToDelete = setupProfiles.value[idx];
+  
+  // Track this ID so we don't pull it back during the next sync (TTL 2 minutes)
+  deletedProfileIds.value.set(profileToDelete.id, Date.now());
+  
   setupProfiles.value.splice(idx, 1);
   selectedSetupId.value = setupProfiles.value[0]?.id ?? "";
   applySelectedSetupProfile();
@@ -1838,6 +1869,7 @@ async function deleteSelectedSetupProfile() {
   if (syncService.value && profileToDelete.owner === currentUser.value) {
     try {
       await syncService.value.deleteProfile(profileToDelete.id);
+      // Wait for cloud delete to potentially process, or just trust the tombstone
     } catch (e) {
       console.error("Failed to delete profile from server", e);
     }
@@ -2687,7 +2719,17 @@ onMounted(async () => {
     if (backlog.token) {
       await ensureValidBacklogToken();
     }
-  }, 2 * 60 * 1000); // Check every 2 minutes
+  }, 2 * 60 * 1000); // Check token every 2 minutes
+
+  // Background Cloud Sync Polling:
+  // Automatically pull updates from other machines every 3 minutes
+  cloudSyncInterval = window.setInterval(() => {
+    if (syncService.value && syncStatus.value === 'idle') {
+      console.log("[Sync] Periodic background pull...");
+      // Trigger a PULL-only sync (skipPush = true)
+      void syncProfilesWithCloudflare(undefined, true);
+    }
+  }, 3 * 60 * 1000); 
 
   // Initial Startup Sync - Only call triggerSync if authenticated. 
   // It handles the full pull internally.
@@ -2700,10 +2742,12 @@ onMounted(async () => {
 onUnmounted(() => {
   unregisterAllShortcuts();
   if (backlogRefreshInterval) window.clearInterval(backlogRefreshInterval);
+  if (cloudSyncInterval) window.clearInterval(cloudSyncInterval);
   if (unlistenRunnerLog) unlistenRunnerLog();
   if (unlistenBuildStatus) unlistenBuildStatus();
   if (runnerPollTimer) window.clearInterval(runnerPollTimer);
 });
+
 </script>
 
 <template>
