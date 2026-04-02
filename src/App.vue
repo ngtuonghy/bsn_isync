@@ -299,6 +299,14 @@ async function restoreVersion(v: any) {
 }
 const isApplyingProfile = ref(false);
 const deletedProfileIds = ref<Map<string, number>>(new Map()); // id -> timestamp
+try {
+  const stored = localStorage.getItem('bsn_isync:deleted_profiles');
+  if (stored) deletedProfileIds.value = new Map(JSON.parse(stored));
+} catch(e) {}
+function saveDeletedProfileIds() {
+  localStorage.setItem('bsn_isync:deleted_profiles', JSON.stringify(Array.from(deletedProfileIds.value.entries())));
+}
+
 const loadedIssueTypesProjectKey = ref<string | null>(null);
 const CLOUDFLARE_WORKER_URL = "https://bsn-isync-sync-worker.ngtuonghy.workers.dev";
 
@@ -1087,9 +1095,7 @@ watch(() => {
   // CRITICAL: Block auto-save if we are currently loading/applying a profile to avoid race syncs
   if (!isApplyingProfile.value && JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
     if (selectedSetupId.value) {
-      if (canEditSelected.value) {
-        saveCurrentToSelectedSetupProfile();
-      }
+      saveCurrentToSelectedSetupProfile();
     }
   }
 }, { deep: true });
@@ -1126,7 +1132,6 @@ const argsInputRefBat = ref<any>(null);
 const argsInputRefExe = ref<any>(null);
 
 function insertTimePlaceholder() {
-  if (!canEditSelected.value) return;
   const targetRef = runner.isExeTestMode ? argsInputRefExe.value : argsInputRefBat.value;
   let input = targetRef?.$el as HTMLInputElement | undefined;
   if (input && input.tagName !== 'INPUT') input = input.querySelector("input") as HTMLInputElement | undefined;
@@ -1159,7 +1164,6 @@ function insertTimePlaceholder() {
 }
 
 function insertHostnamePlaceholder() {
-  if (!canEditSelected.value) return;
   const placeholder = "{hostname}";
   const targetRef = runner.isExeTestMode ? argsInputRefExe.value : argsInputRefBat.value;
   let input = targetRef?.$el as HTMLInputElement | undefined;
@@ -1456,6 +1460,7 @@ async function loadSetupsForCurrentRoot() {
     return;
   }
   try {
+    const seenIds = new Set<string>();
     const normalized = raw.map((setup) => ({
       ...setup,
       owner: (setup as any).owner || currentUser.value,
@@ -1464,6 +1469,11 @@ async function loadSetupsForCurrentRoot() {
       // Remove any that have no project root AND use a default name AND aren't the only one
       const isPlaceholder = !p.projectRoot && /^Setup\s+\d+$/i.test(p.name);
       if (isPlaceholder && self.length > 1) return false;
+      
+      // Deduplicate by ID
+      if (seenIds.has(p.id)) return false;
+      seenIds.add(p.id);
+      
       return true;
     });
 
@@ -1554,7 +1564,8 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
         if (!local || serverVersion > localVersion) {
           const idx = setupProfiles.value.findIndex(p => p.id === targetId);
           if (idx !== -1) {
-            setupProfiles.value[idx] = { ...content, version: serverVersion, isExeTestMode: local?.isExeTestMode, forceUnicode: local?.forceUnicode ?? true };
+            const current = setupProfiles.value[idx];
+            setupProfiles.value[idx] = { ...content, version: serverVersion, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true };
           } else {
             setupProfiles.value.push({ ...content, version: serverVersion, forceUnicode: true });
           }
@@ -1578,7 +1589,7 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
         if (isTargetedSync && meta.id !== targetId) return;
 
         const deletedAt = deletedProfileIds.value.get(meta.id);
-        if (deletedAt && (Date.now() - deletedAt < 2 * 60 * 1000)) return;
+        if (deletedAt) return; // Permanent local tombstone blocks pull if cloud delete failed
 
         const local = localMap.get(meta.id);
         const serverVersion = Number(meta.version) || 0;
@@ -1607,14 +1618,14 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
             return;
           }
 
-          const local = localMap.get(cp.id);
           const idx = setupProfiles.value.findIndex(p => p.id === cp.id);
-          if (!local) {
+          if (idx === -1) {
             const isPlaceholder = !content.projectRoot && /^Setup\s+\d+$/i.test(content.name);
             if (isPlaceholder) return;
             setupProfiles.value.push({ ...content, version: cp.version, forceUnicode: true });
           } else {
-            setupProfiles.value[idx] = { ...content, version: cp.version, isExeTestMode: local?.isExeTestMode, forceUnicode: local?.forceUnicode ?? true };
+            const current = setupProfiles.value[idx];
+            setupProfiles.value[idx] = { ...content, version: cp.version, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true };
           }
           const { updatedAt, version, isExeTestMode, forceUnicode, ...hashable } = content;
           profileHashes.set(cp.id, JSON.stringify(hashable));
@@ -1628,9 +1639,14 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
         const cloudIds = new Set(cloudMetas.map(m => m.id));
         
         // 1. Clear tombstones for IDs no longer on cloud
+        let tombstoneChanged = false;
         deletedProfileIds.value.forEach((_, id) => {
-           if (!cloudIds.has(id)) deletedProfileIds.value.delete(id);
+           if (!cloudIds.has(id)) {
+             deletedProfileIds.value.delete(id);
+             tombstoneChanged = true;
+           }
         });
+        if (tombstoneChanged) saveDeletedProfileIds();
 
         // 2. REMOTE DELETE: If a synced profile is missing from cloud, delete it locally
         // (But only if it's NOT in our recently deleted list and NOT a guest profile)
@@ -1812,9 +1828,6 @@ async function applySelectedSetupProfile(silent = false) {
 }
 
 function saveCurrentToSelectedSetupProfile() {
-  if (!canEditSelected.value) {
-    return;
-  }
   const idx = setupProfiles.value.findIndex((x) => x.id === selectedSetupId.value);
   if (idx < 0) return;
   
@@ -1871,16 +1884,13 @@ function saveCurrentToSelectedSetupProfile() {
 const preventAutoSearch = ref(false);
 
 function focusProfileName() {
-  if (!selectedProfile.value || !canEditSelected.value) return;
+  if (!selectedProfile.value) return;
   nextTick(() => {
     profileNameInput.value?.focus();
   });
 }
 
 function commitProfileName() {
-  if (!canEditSelected.value) {
-    return;
-  }
   const namePart = editableProfileName.value.trim();
   if (!namePart) {
     return;
@@ -1956,10 +1966,6 @@ async function deleteSelectedSetupProfile() {
   if (runner.running) {
     return;
   }
-  if (!canEditSelected.value) {
-    toast.error("Only the creator can delete this profile");
-    return;
-  }
   if (setupProfiles.value.length <= 1) {
     toast.error("Must keep at least 1 setup");
     return;
@@ -1969,8 +1975,9 @@ async function deleteSelectedSetupProfile() {
   
   const profileToDelete = setupProfiles.value[idx];
   
-  // Track this ID so we don't pull it back during the next sync (TTL 2 minutes)
+  // Track this ID so we don't pull it back during the next sync
   deletedProfileIds.value.set(profileToDelete.id, Date.now());
+  saveDeletedProfileIds();
   
   setupProfiles.value.splice(idx, 1);
   selectedSetupId.value = setupProfiles.value[0]?.id ?? "";
@@ -3118,7 +3125,7 @@ onUnmounted(() => {
                     </div>
                     <div v-if="selectedProfile && selectedProfile.owner" class="text-[9px] px-2 py-0.5 rounded-full bg-muted font-medium uppercase tracking-tighter">{{ selectedProfile.owner }}</div>
                     <div v-if="selectedProfile && !canEditSelected" class="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 font-bold uppercase tracking-tighter flex items-center gap-1">
-                      <Lock class="size-2.5" /> Read Only
+                      <Lock class="size-2.5" /> Local Edit
                     </div>
                     
                     <!-- Professional Profile Sync Status -->
@@ -3288,7 +3295,6 @@ onUnmounted(() => {
                                     v-model="editableProfileName" 
                                     class="font-black h-10 border-0 bg-transparent focus-visible:ring-0 px-2 -ml-2 transition-all rounded-md text-xl flex-1 min-w-0 cursor-text shadow-none" 
                                     placeholder="Profile name or search issue..."
-                                    :disabled="!canEditSelected"
                                     @focus="() => { if (!preventAutoSearch) showIssueSearch = true; }"
                                     @input="showIssueSearch = true"
                                     @blur="commitProfileName"
@@ -3298,7 +3304,6 @@ onUnmounted(() => {
                                     <span class="truncate block w-full text-left" :title="runner.backlogIssueKey">{{ runner.backlogIssueKey }}</span>
                                     <button @click.stop="unlinkBacklogIssue" 
                                             class="hover:bg-primary/80 hover:text-primary-foreground rounded-full p-0.5 transition-colors opacity-60 group-hover/badge:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed" 
-                                            :disabled="!canEditSelected"
                                             title="Unlink issue">
                                       <X class="size-2.5" />
                                     </button>
@@ -3377,7 +3382,7 @@ onUnmounted(() => {
                             size="sm" 
                             class="flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-destructive hover:text-destructive-foreground hover:bg-destructive/20 transition-all border border-destructive/20 font-black tracking-widest text-[9px] shadow-sm uppercase shrink-0"
                             title="Delete this Profile"
-                            :disabled="runner.running || !canEditSelected"
+                            :disabled="runner.running"
                             @click="deleteSelectedSetupProfile"
                           >
                             <Trash2 class="size-3.5 opacity-80" /> DELETE
@@ -3427,8 +3432,7 @@ onUnmounted(() => {
                                           </div>
                                           <Textarea v-model="runner.configTemplate" 
                                                     class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
-                                                    placeholder="<!-- XML Template content (for Test) -->" 
-                                                    :disabled="!canEditSelected" />
+                                                    placeholder="<!-- XML Template content (for Test) -->" />
                                        </div>
 
                                     </TabsContent>
@@ -3443,8 +3447,7 @@ onUnmounted(() => {
                                           </div>
                                           <Textarea v-model="runner.runConfigTemplate" 
                                                     class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
-                                                    placeholder="<!-- Run XML content -->" 
-                                                    :disabled="!canEditSelected" />
+                                                    placeholder="<!-- Run XML content -->" />
                                        </div>
                                     </TabsContent>
                                     <TabsContent value="conn" class="flex flex-col flex-1 min-h-0 mt-0 animate-in fade-in slide-in-from-top-4 duration-300">
@@ -3457,8 +3460,7 @@ onUnmounted(() => {
                                           </div>
                                           <Textarea v-model="runner.connectionStringTemplate" 
                                                     class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
-                                                    placeholder="<connectionStrings>&#10;  <add name=&quot;EntityFramework&quot; connectionString=&quot;Data Source=...;Initial Catalog=...;Integrated Security=True&quot; />&#10;</connectionStrings>" 
-                                                    :disabled="!canEditSelected" />
+                                                    placeholder="<connectionStrings>&#10;  <add name=&quot;EntityFramework&quot; connectionString=&quot;Data Source=...;Initial Catalog=...;Integrated Security=True&quot; />&#10;</connectionStrings>" />
                                           <div class="px-4 py-2 bg-primary/5 text-[9px] font-bold text-primary/60 uppercase tracking-widest border-t border-primary/5">
                                             SQL Server and Database will still be automatically mapped.
                                           </div>
@@ -3469,8 +3471,8 @@ onUnmounted(() => {
                             </DialogContent>
                           </Dialog>
                         </div>
-                            <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject" :disabled="!canEditSelected">
-                              <SelectTrigger class="w-full h-9 bg-muted/20 border-input" :disabled="!canEditSelected">
+                            <Select v-model="selectedProjectRoot" @update:model-value="applySelectedProject">
+                              <SelectTrigger class="w-full h-9 bg-muted/20 border-input">
                                 <div class="truncate max-w-full font-medium text-xs">
                                   <SelectValue placeholder="Scan projects to select...">
                                     {{ discoveredProjects.find(p => p.root === selectedProjectRoot)?.name }}
@@ -3507,7 +3509,7 @@ onUnmounted(() => {
                               <TerminalSquare class="size-3.5 text-primary opacity-80" /> 
                               <span class="opacity-80">Test Configuration</span>
                             </Label>
-                            <div v-if="canEditSelected" class="flex items-center bg-muted/50 p-0.5 rounded-md border shadow-inner">
+                            <div class="flex items-center bg-muted/50 p-0.5 rounded-md border shadow-inner">
                               <button @click="runner.isExeTestMode = false" 
                                       :class="!runner.isExeTestMode ? 'bg-background shadow-sm text-foreground ring-1 ring-black/5 dark:ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
                                       class="px-2.5 py-0.5 rounded-sm text-[9px] font-bold transition-all uppercase tracking-wider">
@@ -3524,15 +3526,15 @@ onUnmounted(() => {
                           <div v-if="!runner.isExeTestMode" class="space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-300">
                             <div class="flex gap-1.5 h-9">
                               <div class="flex-1 relative flex items-center">
-                                <Input v-model="runner.batFilePath" placeholder="Path to .bat file" class="font-mono pr-8 h-full text-[11px]" :disabled="!canEditSelected" />
+                                <Input v-model="runner.batFilePath" placeholder="Path to .bat file" class="font-mono pr-8 h-full text-[11px]" />
                                 <Beaker class="absolute right-2.5 size-3 opacity-30" />
                               </div>
-                              <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile" :disabled="!canEditSelected"><FolderOpen class="size-4" /></Button>
+                              <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile"><FolderOpen class="size-4" /></Button>
                             </div>
                             <div class="flex items-center justify-end pr-1 mt-1.5">
                               <label class="flex items-center gap-1.5 cursor-pointer group select-none">
                                 <div class="relative flex items-center justify-center">
-                                  <input type="checkbox" v-model="runner.forceUnicode" :disabled="!canEditSelected" class="peer sr-only" />
+                                  <input type="checkbox" v-model="runner.forceUnicode" class="peer sr-only" />
                                   <div class="w-6 h-3.5 bg-muted-foreground/30 rounded-full peer-checked:bg-primary/80 transition-colors shadow-inner border border-border/50"></div>
                                   <div class="absolute left-[2px] size-2.5 bg-background rounded-full shadow-sm transform transition-transform peer-checked:translate-x-[10px] border border-border/50"></div>
                                 </div>
@@ -3551,24 +3553,24 @@ onUnmounted(() => {
                               </Label>
                               
                               <div v-if="!runner.isExeTestMode" class="relative flex items-center group/args animate-in fade-in slide-in-from-right-2 duration-300">
-                                <Input ref="argsInputRefBat" v-model="runner.runArgs" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
+                                <Input ref="argsInputRefBat" v-model="runner.runArgs" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
                                 <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="!canEditSelected">
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder">
                                     <Clock class="size-3" />
                                   </Button>
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder" :disabled="!canEditSelected">
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder">
                                     <Monitor class="size-3" />
                                   </Button>
                                 </div>
                               </div>
                               
                               <div v-else class="relative flex items-center group/args animate-in fade-in slide-in-from-right-2 duration-300">
-                                <Input ref="argsInputRefExe" v-model="runner.exeArgs" placeholder="1 2 3 4 5 ..." class="pr-20 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
+                                <Input ref="argsInputRefExe" v-model="runner.exeArgs" placeholder="1 2 3 4 5 ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
                                 <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="!canEditSelected">
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder">
                                     <Clock class="size-3" />
                                   </Button>
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder" :disabled="!canEditSelected">
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder">
                                     <Monitor class="size-3" />
                                   </Button>
                                 </div>
@@ -3620,13 +3622,13 @@ onUnmounted(() => {
 
                                 <div class="w-px h-5 bg-border/80 mx-0.5"></div>
 
-                                <Button variant="outline" size="sm" class="h-8 px-3 rounded-lg border-primary/20 bg-primary/10 hover:bg-primary text-primary hover:text-primary-foreground shadow-sm transition-all focus:ring-2 focus:ring-primary/20 font-black tracking-widest text-[9px]" @click="createNewSqlSnippet" :disabled="!canEditSelected" title="Create a new query script">
+                                <Button variant="outline" size="sm" class="h-8 px-3 rounded-lg border-primary/20 bg-primary/10 hover:bg-primary text-primary hover:text-primary-foreground shadow-sm transition-all focus:ring-2 focus:ring-primary/20 font-black tracking-widest text-[9px]" @click="createNewSqlSnippet" title="Create a new query script">
                                   <Plus class="size-3.5 mr-1.5" /> CREATE
                                 </Button>
-                                <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0 rounded-lg hover:bg-background shadow-xs text-muted-foreground transition-all" @click="renameActiveSqlSnippet" :disabled="!canEditSelected || runner.sqlSnippets.length === 0" title="Rename Script">
+                                <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0 rounded-lg hover:bg-background shadow-xs text-muted-foreground transition-all" @click="renameActiveSqlSnippet" :disabled="runner.sqlSnippets.length === 0" title="Rename Script">
                                   <Pencil class="size-3.5" />
                                 </Button>
-                                <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0 rounded-lg hover:bg-destructive shadow-xs hover:text-destructive-foreground text-destructive/80 transition-all" @click="deleteActiveSqlSnippet" :disabled="!canEditSelected || runner.sqlSnippets.length === 0" title="Delete Script">
+                                <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0 rounded-lg hover:bg-destructive shadow-xs hover:text-destructive-foreground text-destructive/80 transition-all" @click="deleteActiveSqlSnippet" :disabled="runner.sqlSnippets.length === 0" title="Delete Script">
                                   <Trash2 class="size-3.5" />
                                 </Button>
                               </div>
@@ -3636,7 +3638,7 @@ onUnmounted(() => {
                                 placeholder="-- Write SQL queries here..."
                                 height="260px"
                                 font-size="11px"
-                                :disabled="!canEditSelected || runner.sqlSnippets.length === 0"
+                                :disabled="runner.sqlSnippets.length === 0"
                                 @change="(v: string) => { 
                                    const s = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
                                    if(s) s.content = v;

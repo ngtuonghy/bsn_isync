@@ -206,7 +206,10 @@ app.delete('/api/v1/profiles/:id', async (c) => {
       return c.json({ error: 'Only the owner can delete this profile' }, 403);
     }
 
-    await c.env.DB.prepare('DELETE FROM profiles WHERE id = ?1').bind(id).run();
+    await c.env.DB.batch([
+      c.env.DB.prepare('DELETE FROM profile_history WHERE profile_id = ?1').bind(id),
+      c.env.DB.prepare('DELETE FROM profiles WHERE id = ?1').bind(id)
+    ]);
     return c.json({ success: true });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
