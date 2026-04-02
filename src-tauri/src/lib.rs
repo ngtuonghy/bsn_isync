@@ -19,6 +19,15 @@ mod updater;
 struct RunnerRuntimeState {
     child: Option<Child>,
     fingerprints: BTreeMap<String, u64>,
+    temp_files: Vec<String>,
+}
+
+impl Drop for RunnerRuntimeState {
+    fn drop(&mut self) {
+        for path in &self.temp_files {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 struct RunnerState(Mutex<RunnerRuntimeState>);
@@ -108,6 +117,7 @@ struct ProjectCandidate {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct DotnetRequest {
     project_root: String,
     startup_project: String,
@@ -117,6 +127,9 @@ struct DotnetRequest {
     bat_file_path: Option<String>,
     target: Option<String>,
     config_template: Option<String>,
+    run_config_template: Option<String>,
+    #[serde(rename = "forceUnicode", alias = "force_unicode")]
+    force_unicode: Option<bool>,
     sql_setup_path: Option<String>,
     sql_server: Option<String>,
     sql_database: Option<String>,
@@ -125,7 +138,6 @@ struct DotnetRequest {
     sql_use_windows_auth: Option<bool>,
     run_args: Option<String>,
     deploy_path: Option<String>,
-    run_config_template: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -930,13 +942,71 @@ fn dotnet_run_start(
         target_abs = rba;
     }
 
+    let mut actual_bat_path = request.bat_file_path.clone();
+    let mut config_template = request.config_template.clone();
+    let mut run_config_template = request.run_config_template.clone();
+
+    if request.force_unicode.unwrap_or(false) {
+        if let Some(ref bat_str) = request.bat_file_path {
+            let bat_path = Path::new(bat_str);
+            if bat_path.exists() {
+                if let Ok(content_bytes) = fs::read(bat_path) {
+                    let target_bytes_tab = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \"\t\" -W -h -1 -o \"%I_PATH%\"";
+                    let target_bytes_space = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \" \" -W -h -1 -o \"%I_PATH%\"";
+                    let replace_bytes_tab = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \"\t\" -W -h -1 -f 932 -o \"%I_PATH%\"";
+                    let replace_bytes_space = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \" \" -W -h -1 -f 932 -o \"%I_PATH%\"";
+                    
+                    let mut new_content = Vec::with_capacity(content_bytes.len() + 50);
+                    let mut changed = false;
+                    let mut i = 0;
+                    while i < content_bytes.len() {
+                        if i + target_bytes_tab.len() <= content_bytes.len() && &content_bytes[i..i+target_bytes_tab.len()] == target_bytes_tab {
+                            new_content.extend_from_slice(replace_bytes_tab);
+                            i += target_bytes_tab.len();
+                            changed = true;
+                        } else if i + target_bytes_space.len() <= content_bytes.len() && &content_bytes[i..i+target_bytes_space.len()] == target_bytes_space {
+                            new_content.extend_from_slice(replace_bytes_space);
+                            i += target_bytes_space.len();
+                            changed = true;
+                        } else {
+                            new_content.push(content_bytes[i]);
+                            i += 1;
+                        }
+                    }
+                    
+                    if changed {
+                        let file_stem = bat_path.file_stem().unwrap().to_string_lossy();
+                        let new_bat_path = bat_path.with_file_name(format!("{}_isync.bat", file_stem));
+                        if fs::write(&new_bat_path, &new_content).is_ok() {
+                            let new_bat_str = new_bat_path.to_string_lossy().to_string();
+                            if let Ok(mut guard) = state.0.lock() {
+                                if !guard.temp_files.contains(&new_bat_str) {
+                                    guard.temp_files.push(new_bat_str.clone());
+                                }
+                            }
+                            if let Some(c) = config_template.as_mut() {
+                                *c = c.replace(bat_str, &new_bat_str);
+                                *c = c.replace(&bat_str.replace("\\", "\\\\"), &new_bat_str.replace("\\", "\\\\"));
+                            }
+                            if let Some(c) = run_config_template.as_mut() {
+                                *c = c.replace(bat_str, &new_bat_str);
+                                *c = c.replace(&bat_str.replace("\\", "\\\\"), &new_bat_str.replace("\\", "\\\\"));
+                            }
+                            actual_bat_path = Some(new_bat_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Apply target config override to the tested target project's output
     let _ = copy_alias_exe_and_config(
         &root,
         &startup_abs,
         &config,
         None,
-        request.config_template.as_ref(),
+        config_template.as_ref(),
         None,
         request.deploy_path.as_ref(),
     );
@@ -949,7 +1019,7 @@ fn dotnet_run_start(
             &config,
             request.alias_exe_name.as_ref(),
             None,
-            request.run_config_template.as_ref(),
+            run_config_template.as_ref(),
             request.deploy_path.as_ref(),
         );
     }
@@ -1002,7 +1072,7 @@ fn dotnet_run_start(
     let target = request.target.as_deref().unwrap_or("exe");
     
     let cmd_str = if target == "bat" {
-        if let Some(bat_path_str) = request.bat_file_path.as_ref().filter(|s| !s.trim().is_empty()) {
+        if let Some(bat_path_str) = actual_bat_path.as_ref().filter(|s| !s.trim().is_empty()) {
             let mut final_path = bat_path_str.clone();
             let mut is_temp = false;
 
@@ -1010,11 +1080,17 @@ fn dotnet_run_start(
             if is_looks_like_batch_code(&final_path) && !Path::new(&final_path).exists() {
                 final_path = prepare_batch_temp_file(final_path)?;
                 is_temp = true;
+                if let Ok(mut guard) = state.0.lock() {
+                    if !guard.temp_files.contains(&final_path) {
+                        guard.temp_files.push(final_path.clone());
+                    }
+                }
+            } else if final_path.ends_with("_isync.bat") {
+                is_temp = true;
             }
 
-            let bat_path = std::path::Path::new(&final_path);
-            let parent = bat_path.parent().and_then(|p| p.to_str()).unwrap_or("");
-            let file_name = bat_path.file_name().and_then(|f| f.to_str()).unwrap_or(&final_path);
+            let original_bat_path = std::path::Path::new(bat_path_str);
+            let parent = original_bat_path.parent().and_then(|p| p.to_str()).unwrap_or("");
 
             // Cleanup suffix: delete temp file after run in PowerShell
             let cleanup = if is_temp {
@@ -1023,25 +1099,84 @@ fn dotnet_run_start(
                 String::new()
             };
 
+            let mut cmd = String::new();
+            if request.force_unicode.unwrap_or(false) {
+                cmd.push_str("chcp 932 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(932); ");
+            }
+
             if !parent.is_empty() {
                 if run_args.is_empty() {
-                    format!("cd '{}'; & './{}'{}\r\n", parent, file_name, cleanup)
+                    cmd.push_str(&format!("cd '{}'; & '{}'{}\r\n", parent, final_path, cleanup));
                 } else {
-                    format!("cd '{}'; & './{}' {}{}\r\n", parent, file_name, run_args, cleanup)
+                    cmd.push_str(&format!("cd '{}'; & '{}' {}{}\r\n", parent, final_path, run_args, cleanup));
                 }
             } else {
                 if run_args.is_empty() {
-                    format!("& '{}'{}\r\n", final_path, cleanup)
+                    cmd.push_str(&format!("& '{}'{}\r\n", final_path, cleanup));
                 } else {
-                    format!("& '{}' {}{}\r\n", final_path, run_args, cleanup)
+                    cmd.push_str(&format!("& '{}' {}{}\r\n", final_path, run_args, cleanup));
                 }
             }
+            cmd
         } else {
             return Err("BAT file path not configured for Test action".to_string());
         }
     } else {
-        // Run EXE without args ("khôgn cần truyền thanh số")
-        format!("& '{}'\r\n", exe_path.display())
+        let mut exe_path_to_run = exe_path.clone();
+        if target == "test_exe" {
+            let startup_file_name = startup_abs.file_name().unwrap().to_str().unwrap();
+            let source_exe_name = startup_file_name.replace(".csproj", ".exe");
+            
+            if let Some(dp) = request.deploy_path.as_ref().filter(|s| !s.trim().is_empty()) {
+                let dp_path = normalize_input_path(dp);
+                let dp_path = if dp_path.is_absolute() {
+                    dp_path
+                } else {
+                    root.join(dp_path)
+                };
+                exe_path_to_run = dp_path.join(&source_exe_name);
+            } else {
+                let project_dir = startup_abs.parent().unwrap();
+                let mut custom_out = None;
+                if let Ok(content) = fs::read_to_string(&startup_abs) {
+                    let mut condition_matches = true;
+                    for line in content.lines() {
+                        if line.contains("<PropertyGroup") {
+                            if line.contains("Condition=") {
+                                condition_matches = line.contains(&config);
+                            } else {
+                                condition_matches = true;
+                            }
+                        }
+                        if line.contains("<OutputPath>") {
+                            if condition_matches {
+                                let s = line.find("<OutputPath>").unwrap() + 12;
+                                let e = line.find("</OutputPath>").unwrap_or(line.len());
+                                custom_out = Some(line[s..e].trim().to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(p) = custom_out {
+                    exe_path_to_run = project_dir.join(p.replace('\\', "/")).join(&source_exe_name);
+                } else {
+                    exe_path_to_run = project_dir.join("bin").join(&config).join(&source_exe_name);
+                }
+            }
+        }
+
+        let mut cmd = String::new();
+        if request.force_unicode.unwrap_or(false) {
+            cmd.push_str("chcp 932 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(932); ");
+        }
+
+        if run_args.is_empty() {
+            cmd.push_str(&format!("& '{}'\r\n", exe_path_to_run.display()));
+        } else {
+            cmd.push_str(&format!("& '{}' {}\r\n", exe_path_to_run.display(), run_args));
+        }
+        cmd
     };
     
     let pty_id = if target == "bat" { "main" } else { "run" };
@@ -1058,11 +1193,16 @@ fn dotnet_run_start(
 }
 
 #[tauri::command]
-fn dotnet_run_stop(pty_state: State<MultiPtyState>) -> Result<bool, String> {
+fn dotnet_run_stop(state: State<RunnerState>, pty_state: State<MultiPtyState>) -> Result<bool, String> {
     let mut guard = pty_state.inner().0.lock().unwrap();
     if let Some((_, writer)) = guard.get_mut("run") {
         let _ = writer.write_all(&[3]); // Ctrl+C
         let _ = writer.flush();
+    }
+    if let Ok(mut runner_guard) = state.0.lock() {
+        for path in runner_guard.temp_files.drain(..) {
+            let _ = std::fs::remove_file(path);
+        }
     }
     Ok(true)
 }
@@ -1074,11 +1214,17 @@ fn dotnet_run_is_running(state: State<RunnerState>) -> Result<bool, String> {
         match child.try_wait() {
             Ok(Some(_)) => {
                 guard.child = None;
+                for path in guard.temp_files.drain(..) {
+                    let _ = std::fs::remove_file(path);
+                }
                 Ok(false)
             }
             Ok(None) => Ok(true),
             Err(_) => {
                 guard.child = None;
+                for path in guard.temp_files.drain(..) {
+                    let _ = std::fs::remove_file(path);
+                }
                 Ok(false)
             }
         }
@@ -1314,6 +1460,7 @@ pub fn run() {
         .manage(RunnerState(Mutex::new(RunnerRuntimeState {
             child: None,
             fingerprints: BTreeMap::new(),
+            temp_files: Vec::new(),
         })))
         .manage(MultiPtyState(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![

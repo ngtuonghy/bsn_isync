@@ -4,7 +4,7 @@ const APP_VERSION = __APP_VERSION__;
 
 import { ref, reactive, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { onClickOutside } from "@vueuse/core";
-import { FolderOpen, ScanSearch, Maximize2, User, Lock, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, Settings2, Database, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, Keyboard, FileDown, Monitor } from "lucide-vue-next";
+import { FolderOpen, ScanSearch, Maximize2, User, Lock, Plus, Pencil, Save, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Sun, Moon, Search, Clock, RefreshCw, ArrowUpCircle, ExternalLink, X, ShieldCheck, ShieldAlert, Bell, BellOff, Cloud, History, Settings2, Database, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, Keyboard, FileDown, Monitor } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import BacklogAuthPanel from "@/components/BacklogAuthPanel.vue";
+import ProfileHistory from "@/components/ProfileHistory.vue";
 import {
   fetchBacklogProfileWithToken,
   fetchBacklogProjects,
@@ -163,6 +164,9 @@ type ProjectProfile = {
   aliasExeName: string;
   batFilePath: string;
   runArgs?: string;
+  exeArgs?: string;
+  isExeTestMode?: boolean;
+  forceUnicode?: boolean;
   sqlSetupPath: string;
   sqlServer?: string;
   sqlDatabase?: string;
@@ -181,6 +185,7 @@ type ProjectProfile = {
   backlogIssueSummary?: string;
   deployPath?: string;
   updatedAt: number;
+  version?: number;
   shortcuts?: Record<string, string>;
 };
 
@@ -270,6 +275,28 @@ async function checkForUpdates(manual = false) {
 
 const isNotificationEnabled = ref(true);
 const syncStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
+const isFetchingProfile = ref(false);
+const lastSyncTime = ref<number | null>(null);
+const profileHashes = new Map<string, string>(); // Dirty checking: Store content hashes to avoid redundant pushes
+const showHistoryDialog = ref(false);
+
+async function restoreVersion(v: any) {
+  if (!selectedProfile.value) return;
+  const content = typeof v.content === 'string' ? JSON.parse(v.content) : v.content;
+  
+  // Apply content to current profile
+  const idx = setupProfiles.value.findIndex(p => p.id === selectedProfile.value!.id);
+  if (idx !== -1) {
+    setupProfiles.value[idx] = { 
+      ...content, 
+      version: selectedProfile.value.version // Keep local version tracking for next sync push
+    };
+    applySelectedSetupProfile(true);
+    await saveSetupsForCurrentRoot();
+    toast.success(`Restored to version ${v.version}`);
+    showHistoryDialog.value = false;
+  }
+}
 const isApplyingProfile = ref(false);
 const deletedProfileIds = ref<Map<string, number>>(new Map()); // id -> timestamp
 const loadedIssueTypesProjectKey = ref<string | null>(null);
@@ -411,11 +438,6 @@ async function saveUIState() {
     };
     await setItem(UI_STATE_KEY, state);
     console.log("[Store] UI state changed (saving via autoSave).");
-    
-    // Trigger Sync when critical UI state (Backlog account) changes
-    if (backlog.token?.access_token) {
-       triggerSync();
-    }
   } catch (e) {
     console.error("[Store] Failed to trigger save UI state", e);
   }
@@ -908,6 +930,9 @@ const runner = reactive({
   aliasExeName: "",
   batFilePath: "",
   runArgs: "",
+  exeArgs: "",
+  isExeTestMode: false,
+  forceUnicode: true,
   sqlSetupPath: "",
   sqlServer: localStorage.getItem("bsn_isync:global_sql_server") || "",
   sqlDatabase: localStorage.getItem("bsn_isync:global_sql_db") || "Arkbell_01",
@@ -1052,7 +1077,7 @@ onClickOutside(hotkeyContainerRef, () => {
 // --- Autosave logic ---
 watch(() => {
   const { 
-    running, loadingTarget, logs, childPid, buildStatus, 
+    running, loadingTarget, logs, childPid, buildStatus, isExeTestMode, forceUnicode,
     // Exclude SQL settings from profile persistence
     sqlServer, sqlDatabase, sqlUser, sqlPassword, useWindowsAuth,
     ...rest 
@@ -1097,46 +1122,73 @@ function resolveArgs(args: string) {
   return args.replace(/{time}/g, time8).replace(/{hostname}/g, host6);
 }
 
-const argsInputRef = ref<any>(null);
+const argsInputRefBat = ref<any>(null);
+const argsInputRefExe = ref<any>(null);
 
 function insertTimePlaceholder() {
-  const input = argsInputRef.value?.$el as HTMLInputElement;
+  if (!canEditSelected.value) return;
+  const targetRef = runner.isExeTestMode ? argsInputRefExe.value : argsInputRefBat.value;
+  let input = targetRef?.$el as HTMLInputElement | undefined;
+  if (input && input.tagName !== 'INPUT') input = input.querySelector("input") as HTMLInputElement | undefined;
   if (!input) {
-    runner.runArgs += " {time}";
+    if (runner.isExeTestMode) runner.exeArgs += " {time}";
+    else runner.runArgs += " {time}";
     return;
   }
 
-  const start = input.selectionStart ?? runner.runArgs.length;
-  const end = input.selectionEnd ?? runner.runArgs.length;
-  const val = runner.runArgs;
+  const isExe = runner.isExeTestMode;
+  const start = input.selectionStart ?? (isExe ? runner.exeArgs.length : runner.runArgs.length);
+  const end = input.selectionEnd ?? (isExe ? runner.exeArgs.length : runner.runArgs.length);
+  const val = isExe ? runner.exeArgs : runner.runArgs;
 
-  runner.runArgs = val.substring(0, start) + "{time}" + val.substring(end);
+  const prefix = val.substring(0, start);
+  const suffix = val.substring(end);
+  const insertStr = (prefix.length > 0 && !prefix.endsWith(' ')) ? " {time}" : "{time}";
+  const newVal = prefix + insertStr + suffix;
+
+  if (isExe) runner.exeArgs = newVal;
+  else runner.runArgs = newVal;
 
   nextTick(() => {
-    input.focus();
-    const newPos = start + "{time}".length;
-    input.setSelectionRange(newPos, newPos);
+    if (input) {
+      input.focus();
+      const newPos = start + insertStr.length;
+      input.setSelectionRange(newPos, newPos);
+    }
   });
 }
 
 function insertHostnamePlaceholder() {
+  if (!canEditSelected.value) return;
   const placeholder = "{hostname}";
-  const input = argsInputRef.value?.$el as HTMLInputElement;
+  const targetRef = runner.isExeTestMode ? argsInputRefExe.value : argsInputRefBat.value;
+  let input = targetRef?.$el as HTMLInputElement | undefined;
+  if (input && input.tagName !== 'INPUT') input = input.querySelector("input") as HTMLInputElement | undefined;
   if (!input) {
-    runner.runArgs += " " + placeholder;
+    if (runner.isExeTestMode) runner.exeArgs += " " + placeholder;
+    else runner.runArgs += " " + placeholder;
     return;
   }
 
-  const start = input.selectionStart ?? runner.runArgs.length;
-  const end = input.selectionEnd ?? runner.runArgs.length;
-  const val = runner.runArgs;
+  const isExe = runner.isExeTestMode;
+  const start = input.selectionStart ?? (isExe ? runner.exeArgs.length : runner.runArgs.length);
+  const end = input.selectionEnd ?? (isExe ? runner.exeArgs.length : runner.runArgs.length);
+  const val = isExe ? runner.exeArgs : runner.runArgs;
 
-  runner.runArgs = val.substring(0, start) + placeholder + val.substring(end);
+  const prefix = val.substring(0, start);
+  const suffix = val.substring(end);
+  const insertStr = (prefix.length > 0 && !prefix.endsWith(' ')) ? " " + placeholder : placeholder;
+  const newVal = prefix + insertStr + suffix;
+
+  if (isExe) runner.exeArgs = newVal;
+  else runner.runArgs = newVal;
 
   nextTick(() => {
-    input.focus();
-    const newPos = start + placeholder.length;
-    input.setSelectionRange(newPos, newPos);
+    if (input) {
+      input.focus();
+      const newPos = start + insertStr.length;
+      input.setSelectionRange(newPos, newPos);
+    }
   });
 }
 
@@ -1303,6 +1355,9 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     aliasExeName: runner.aliasExeName,
     batFilePath: toRel(runner.batFilePath),
     runArgs: runner.runArgs,
+    exeArgs: runner.exeArgs,
+    isExeTestMode: runner.isExeTestMode,
+    forceUnicode: runner.forceUnicode,
     sqlSetupPath: runner.sqlSetupPath,
     sqlServer: runner.sqlServer,
     sqlDatabase: runner.sqlDatabase,
@@ -1347,6 +1402,9 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.aliasExeName = setup.aliasExeName || "";
   runner.batFilePath = toAbs(setup.batFilePath || "");
   runner.runArgs = setup.runArgs || "";
+  runner.exeArgs = setup.exeArgs || "";
+  runner.isExeTestMode = setup.isExeTestMode || false;
+  runner.forceUnicode = setup.forceUnicode ?? true;
   runner.deployPath = toAbs(setup.deployPath || "");
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
@@ -1433,148 +1491,246 @@ let lastSyncContext = { targetId: undefined as string | undefined, skipPush: fal
 function triggerSync(id?: string, skipPush = false) {
   if (syncTimer) clearTimeout(syncTimer);
   
-  // If we had a pending FULL sync (id is undefined), and now an INCREMENTAL sync (id is set) comes, 
-  // we must stay as a FULL sync to ensure global settings and all profiles are pushed.
-  const currentTargetId = (lastSyncContext.targetId === undefined && syncTimer) ? undefined : id;
+  const effectiveId = (id && id.trim()) ? id : undefined;
+  
+  // If we have a pending sync, and the new request is for a DIFFERENT id, 
+  // or one is FULL (undefined) and other is TARGETED, we upgrade to FULL to be safe.
+  let currentTargetId: string | undefined = effectiveId;
+  if (syncTimer && lastSyncContext.targetId !== effectiveId) {
+    currentTargetId = undefined; // Upgrade to Full Sync
+  }
   
   lastSyncContext = { targetId: currentTargetId, skipPush };
   
   syncTimer = window.setTimeout(async () => {
-    syncStatus.value = lastSyncContext.skipPush ? 'idle' : 'saving';
-    await syncProfilesWithCloudflare(lastSyncContext.targetId, lastSyncContext.skipPush);
+    const context = { ...lastSyncContext };
+    // Reset context before execution so next triggers start fresh
+    lastSyncContext = { targetId: undefined, skipPush: false };
+    
+    const ok = await ensureValidBacklogToken();
+    if (!ok) {
+      syncTimer = undefined;
+      return;
+    }
+    
+    syncStatus.value = context.skipPush ? 'idle' : 'saving';
+    await syncProfilesWithCloudflare(context.targetId, context.skipPush);
     syncTimer = undefined;
-  }, 2000); // 2-second debounce matching human typing pause
+  }, 1000); 
 }
 
-/**
- * Synchronizes Project Profiles to Cloudflare D1.
- * Only the project configurations (roots, paths, runner args) are synced.
- * UI preferences and Backlog tokens are excluded from this process.
- */
-async function syncProfilesWithCloudflare(targetId?: string, skipPush = false) {
+async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, manual = false) {
   if (!syncService.value) {
     syncStatus.value = 'idle';
     return;
   }
 
-  syncStatus.value = skipPush ? 'saving' : 'saving'; // Both show the spinner/syncing state
+  // Determine sync type
+  const isLazyPull = !!targetId && skipPush;
+  const isTargetedSync = !!targetId && !skipPush;
+  const isFullSync = !targetId;
+
+  if (isLazyPull) isFetchingProfile.value = true;
+  else syncStatus.value = 'saving';
+
+  let pullCount = 0;
+  let pushCount = 0;
   
   try {
-    // 1. PUSH (Incremental or Full) - Parallelized for Speed
-    if (!skipPush) {
-      const pushTasks = [];
-      
-      // ALWAYS push global settings if we have them, as they are small and critical
-      pushTasks.push(syncService.value.upsertProfile({
-        id: "__global_backlog_settings__",
-        name: "Global Backlog Settings",
-        content: {
-          host: backlog.host,
-          apiKey: backlog.apiKey,
-          token: backlog.token,
-          profile: backlog.profile,
-          updatedAt: backlog.updatedAt || Date.now()
-        }
-      }));
-
-      if (targetId && targetId !== "__global_backlog_settings__") {
-        const profile = setupProfiles.value.find(p => p.id === targetId);
-        if (profile && profile.owner === currentUser.value) {
-          pushTasks.push(syncService.value.upsertProfile({
-            id: profile.id,
-            name: profile.name,
-            content: profile
-          }));
-        }
-      } else if (!targetId) {
-        // FULL PUSH: Run all upserts in parallel
-        setupProfiles.value
-          .filter(p => p.owner === currentUser.value)
-          .forEach(p => pushTasks.push(syncService.value!.upsertProfile({
-            id: p.id,
-            name: p.name,
-            content: p
-          })));
-      }
-      await Promise.all(pushTasks);
-    }
-
-    // 2. PULL & CONFLICT RESOLUTION (Time-based Pull)
-    // Always pull EVERYTHING to stay in sync with other machines
-    const cloudResults = await syncService.value.getProfiles();
-
     const localMap = new Map(setupProfiles.value.map(p => [p.id, p]));
     let profilesChanged = false;
     let backlogChanged = false;
+    let currentProfilePulled = false;
 
-    cloudResults.forEach((cp: any) => {
-      const content = typeof cp.content === 'string' ? JSON.parse(cp.content) : cp.content;
-      if (!content) return;
-      
-      // Global Backlog Settings Sync
-      if (cp.id === "__global_backlog_settings__") {
-        const cloudUpdateAt = content.updatedAt || 0;
-        const localUpdateAt = backlog.updatedAt || 0;
-        if (cloudUpdateAt > localUpdateAt) {
-          // If we are currently logging in or performing OAuth, skip overwriting local state
-          // to avoid interrupting the flow.
-          if (backlog.status === 'loading') return;
-          
-          Object.assign(backlog, content);
-          backlogChanged = true;
+    // --- 1. PULL PHASE ---
+    if (isLazyPull) {
+      const cloudProfile = await syncService.value.getProfile(targetId!);
+      if (cloudProfile && cloudProfile.content) {
+        const content = typeof cloudProfile.content === 'string' ? JSON.parse(cloudProfile.content) : cloudProfile.content;
+        const local = localMap.get(targetId!);
+        const serverVersion = Number(cloudProfile.version) || 0;
+        const localVersion = Number(local?.version) || 0;
+
+        if (!local || serverVersion > localVersion) {
+          const idx = setupProfiles.value.findIndex(p => p.id === targetId);
+          if (idx !== -1) {
+            setupProfiles.value[idx] = { ...content, version: serverVersion, isExeTestMode: local?.isExeTestMode, forceUnicode: local?.forceUnicode ?? true };
+          } else {
+            setupProfiles.value.push({ ...content, version: serverVersion, forceUnicode: true });
+          }
+          // Update hash to avoid immediate re-push
+          const { updatedAt, version, isExeTestMode, forceUnicode, ...hashable } = content;
+          profileHashes.set(targetId!, JSON.stringify(hashable));
+          profilesChanged = true;
+          if (targetId === selectedSetupId.value) currentProfilePulled = true;
+          pullCount++;
         }
-        return;
       }
-      
-      // Skip recently deleted profiles locally to avoid "pulling them back" (TTL 2 minutes)
-      const deletedAt = deletedProfileIds.value.get(cp.id);
-      if (deletedAt && (Date.now() - deletedAt < 2 * 60 * 1000)) {
-         return;
-      }
-      
-      const cloudUpdateAt = content.updatedAt || 0;
-      
-      if (!localMap.has(cp.id)) { // NEW PROFILE from cloud
-        const isPlaceholder = !content.projectRoot && /^Setup\s+\d+$/i.test(content.name);
-        if (isPlaceholder) return;
+    } else {
+      const cloudMetas = await syncService.value.getProfiles();
+      const profilesToPull: string[] = [];
 
-        setupProfiles.value.push({ ...content });
-        profilesChanged = true;
-      } else { // EXISTING PROFILE match
-        const local = localMap.get(cp.id)!;
-        const localUpdateAt = local.updatedAt || 0;
-        
-        // CONFLICT RESOLUTION: "Last Write Wins"
-        if (local.owner !== currentUser.value || cloudUpdateAt > localUpdateAt) {
+      cloudMetas.forEach(meta => {
+        if (meta.id === "__global_backlog_settings__") {
+           profilesToPull.push(meta.id);
+           return;
+        }
+        if (isTargetedSync && meta.id !== targetId) return;
+
+        const deletedAt = deletedProfileIds.value.get(meta.id);
+        if (deletedAt && (Date.now() - deletedAt < 2 * 60 * 1000)) return;
+
+        const local = localMap.get(meta.id);
+        const serverVersion = Number(meta.version) || 0;
+        const localVersion = Number(local?.version) || 0;
+        if (!local || serverVersion > localVersion) {
+          profilesToPull.push(meta.id);
+        }
+      });
+
+      if (profilesToPull.length > 0) {
+        const pullResults = await Promise.all(profilesToPull.map(id => syncService.value!.getProfile(id)));
+        pullResults.forEach(cp => {
+          if (!cp || !cp.content) return;
+          const content = typeof cp.content === 'string' ? JSON.parse(cp.content) : cp.content;
+          
+          if (cp.id === "__global_backlog_settings__") {
+            const cloudUpdateAt = content.updatedAt || 0;
+            const localUpdateAt = backlog.updatedAt || 0;
+            if (cloudUpdateAt > localUpdateAt) {
+              if (backlog.status === 'loading') return;
+              Object.assign(backlog, content);
+              backlogChanged = true;
+            }
+            const { updatedAt, ...hashable } = content;
+            profileHashes.set("__global_backlog_settings__", JSON.stringify(hashable));
+            return;
+          }
+
+          const local = localMap.get(cp.id);
           const idx = setupProfiles.value.findIndex(p => p.id === cp.id);
-          setupProfiles.value[idx] = { ...content };
+          if (!local) {
+            const isPlaceholder = !content.projectRoot && /^Setup\s+\d+$/i.test(content.name);
+            if (isPlaceholder) return;
+            setupProfiles.value.push({ ...content, version: cp.version, forceUnicode: true });
+          } else {
+            setupProfiles.value[idx] = { ...content, version: cp.version, isExeTestMode: local?.isExeTestMode, forceUnicode: local?.forceUnicode ?? true };
+          }
+          const { updatedAt, version, isExeTestMode, forceUnicode, ...hashable } = content;
+          profileHashes.set(cp.id, JSON.stringify(hashable));
+          profilesChanged = true;
+          if (cp.id === selectedSetupId.value) currentProfilePulled = true;
+          pullCount++;
+        });
+      }
+
+      if (isFullSync) {
+        const cloudIds = new Set(cloudMetas.map(m => m.id));
+        
+        // 1. Clear tombstones for IDs no longer on cloud
+        deletedProfileIds.value.forEach((_, id) => {
+           if (!cloudIds.has(id)) deletedProfileIds.value.delete(id);
+        });
+
+        // 2. REMOTE DELETE: If a synced profile is missing from cloud, delete it locally
+        // (But only if it's NOT in our recently deleted list and NOT a guest profile)
+        const toRemoveLocally = setupProfiles.value.filter(p => 
+          p.owner !== "Guest" && 
+          p.version !== undefined && // It was previously synced
+          !cloudIds.has(p.id) && 
+          !deletedProfileIds.value.has(p.id)
+        );
+
+        if (toRemoveLocally.length > 0) {
+          console.log(`[Sync] Removing ${toRemoveLocally.length} profiles deleted on other machines.`);
+          setupProfiles.value = setupProfiles.value.filter(p => !toRemoveLocally.includes(p));
           profilesChanged = true;
         }
       }
-    });
+    }
 
-    // Finalize: Clear the tombstone for any IDs that are NO LONGER on the cloud
-    // This allows re-adding the profile with the same ID if needed in the future
-    const cloudIds = new Set(cloudResults.map(cp => cp.id));
-    deletedProfileIds.value.forEach((_, id) => {
-       if (!cloudIds.has(id)) deletedProfileIds.value.delete(id);
-    });
+    // --- 2. PUSH PHASE ---
+    if (!skipPush) {
+      // 5. Push backlog settings if changed
+      const backlogContent = {
+        host: backlog.host,
+        apiKey: backlog.apiKey,
+        token: backlog.token,
+        profile: backlog.profile,
+        updatedAt: backlog.updatedAt || Date.now()
+      };
+      
+      const { updatedAt: _backlogUpd, ...backlogHashable } = backlogContent;
+      const backlogContentStr = JSON.stringify(backlogHashable);
+      const lastBacklogHash = profileHashes.get("__global_backlog_settings__");
+      
+      if (lastBacklogHash !== backlogContentStr) {
+        await syncService.value.upsertProfile({
+          id: "__global_backlog_settings__",
+          name: "Global Backlog Settings",
+          content: backlogContent
+        });
+        profileHashes.set("__global_backlog_settings__", backlogContentStr);
+      }
+
+      const pushProfile = async (p: ProjectProfile) => {
+        if (p.owner !== currentUser.value) return;
+
+        const { updatedAt, version, isExeTestMode, forceUnicode, ...hashable } = p;
+        const currentContentStr = JSON.stringify(hashable);
+        const lastHash = profileHashes.get(p.id);
+        if (lastHash === currentContentStr) return;
+
+        const meta = await syncService.value!.getProfile(p.id);
+        const serverVer = Number(meta?.version) || 0;
+        const localVer = Number(p.version) || 0;
+
+        if (localVer >= serverVer || !meta) {
+           const { forceUnicode: _f, ...payloadToSync } = p;
+           const result = await syncService.value!.upsertProfile({
+             id: p.id,
+             name: p.name,
+             content: payloadToSync,
+             version: localVer
+           });
+           if (result.success && result.version) {
+             p.version = result.version;
+             profileHashes.set(p.id, currentContentStr);
+             profilesChanged = true;
+             pushCount++;
+           }
+        }
+      };
+
+      if (isTargetedSync && targetId !== "__global_backlog_settings__") {
+        const profile = setupProfiles.value.find(p => p.id === targetId);
+        if (profile) await pushProfile(profile);
+      } else if (isFullSync) {
+        for (const p of setupProfiles.value) {
+          await pushProfile(p);
+        }
+      }
+    }
 
     if (profilesChanged) {
       await setItem(setupStorageKey(), setupProfiles.value);
-      if (selectedSetupId.value) applySelectedSetupProfile(true);
+      if (selectedSetupId.value && currentProfilePulled) applySelectedSetupProfile(true);
     }
-    
-    if (backlogChanged) {
-      await saveUIState();
-    }
+    if (backlogChanged) await saveUIState();
 
+    lastSyncTime.value = Date.now();
     syncStatus.value = 'saved';
+    
+    if (manual || (isFullSync && (pullCount > 0 || pushCount > 0))) {
+       toast.success(`Sync complete: ${pullCount} pulled, ${pushCount} pushed.`);
+    }
     setTimeout(() => { if (syncStatus.value === 'saved') syncStatus.value = 'idle'; }, 3000);
   } catch (e) {
     console.error("Sync failed", e);
     syncStatus.value = 'error';
-    toast.error("Sync failed", { description: String(e) });
+    if (manual) toast.error("Sync failed", { description: String(e) });
+  } finally {
+    isFetchingProfile.value = false;
   }
 }
 
@@ -1662,7 +1818,7 @@ function saveCurrentToSelectedSetupProfile() {
   const idx = setupProfiles.value.findIndex((x) => x.id === selectedSetupId.value);
   if (idx < 0) return;
   
-  const setup = { ...setupProfiles.value[idx] };
+  const setup = setupProfiles.value[idx];
   
   // Helper to convert to relative if possible
   const toRel = (p: string) => {
@@ -1683,6 +1839,9 @@ function saveCurrentToSelectedSetupProfile() {
   setup.aliasExeName = runner.aliasExeName;
   setup.batFilePath = toRel(runner.batFilePath);
   setup.runArgs = runner.runArgs;
+  setup.exeArgs = runner.exeArgs;
+  setup.isExeTestMode = runner.isExeTestMode;
+  setup.forceUnicode = runner.forceUnicode;
   setup.sqlSetupPath = runner.sqlSetupPath;
   // Deliberately omitted sqlServer to prevent syncing local workstation host configs to cloud
   setup.sqlDatabase = runner.sqlDatabase;
@@ -1706,7 +1865,6 @@ function saveCurrentToSelectedSetupProfile() {
   setup.deployPath = toRel(runner.deployPath);
   setup.updatedAt = Date.now();
   
-  setupProfiles.value[idx] = setup;
   saveSetupsForCurrentRoot();
 }
 
@@ -1763,6 +1921,9 @@ function createNewSetupProfile() {
   runner.aliasExeName = "";
   runner.batFilePath = "";
   runner.runArgs = "";
+  runner.exeArgs = "";
+  runner.isExeTestMode = false;
+  runner.forceUnicode = true;
   selectedProjectRoot.value = "";
   
   // Clear Backlog issue links for a fresh start
@@ -1844,6 +2005,7 @@ async function exportProfileToDoc() {
 ## 2. Execution Logic
 - **Build Configuration**: ${p.buildConfig}
 - **Runner Arguments**: \`${p.runArgs || '(empty)'}\`
+- **Exe Arguments**: \`${p.exeArgs || '(empty)'}\`
 - **Test (BAT) File**: \`${p.batFilePath || '(empty)'}\`
 - **Deploy Path (Override)**: \`${p.deployPath || '(default)'}\`
 
@@ -2071,48 +2233,53 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
     runner.loadingTarget = null;
     return;
   }
+    const isTestButton = cmd === "run" && target === "bat";
+    const actualTarget = (isTestButton && runner.isExeTestMode) ? "test_exe" : target;
+    const actualArgs = (isTestButton && runner.isExeTestMode) ? runner.exeArgs : runner.runArgs;
+
     // If target is 'bat', ensure we are in the 'main' (Shell) terminal
-    if (target === 'bat') {
+    if (actualTarget === 'bat') {
       termState.active = 'main';
       nextTick(() => termState.main.fit?.fit());
     }
     
     try {
       // Only Flip to Run terminal if target is 'exe'
-      if (target === 'exe') {
+      if (actualTarget === 'exe' || actualTarget === 'test_exe') {
         termState.active = 'run';
-      if (!termState.run.term && runTermRef.value) {
-        await initPty('run', runTermRef.value);
+        if (!termState.run.term && runTermRef.value) {
+          await initPty('run', runTermRef.value);
+        }
+        nextTick(() => termState.run.fit?.fit());
       }
-      nextTick(() => termState.run.fit?.fit());
-    }
 
-    await invoke("dotnet_run_start", {
-      request: {
-        projectRoot: runner.projectRoot,
-        startupProject: runner.startupProject,
-        urls: runner.urls || null,
-        buildConfig: runner.config,
-        aliasExeName: runner.aliasExeName,
-        batFilePath: runner.batFilePath || null,
-        target: target,
-        configTemplate: runner.configTemplate,
-        sqlSetupPath: runner.sqlSetupPath || null,
-        sqlServer: runner.sqlServer || null,
-        sqlDatabase: runner.sqlDatabase || null,
-        sqlUser: runner.sqlUser || null,
-        sqlPassword: runner.sqlPassword || null,
-        sqlUseWindowsAuth: runner.useWindowsAuth,
-        runArgs: resolveArgs(runner.runArgs),
-        deployPath: runner.deployPath || null,
-        runConfigTemplate: runner.runConfigTemplate || null,
-      },
-    });
-    
-    // Only set runner.running for 'exe' to trigger the Stop toggle and Output session
-    if (target === 'exe') {
-      runner.running = true;
-    }
+      await invoke("dotnet_run_start", {
+        request: {
+          projectRoot: runner.projectRoot,
+          startupProject: runner.startupProject,
+          urls: runner.urls || null,
+          buildConfig: runner.config,
+          aliasExeName: runner.aliasExeName,
+          batFilePath: runner.batFilePath || null,
+          target: actualTarget,
+          configTemplate: runner.configTemplate,
+          sqlSetupPath: runner.sqlSetupPath || null,
+          sqlServer: runner.sqlServer || null,
+          sqlDatabase: runner.sqlDatabase || null,
+          sqlUser: runner.sqlUser || null,
+          sqlPassword: runner.sqlPassword || null,
+          sqlUseWindowsAuth: runner.useWindowsAuth,
+          runArgs: resolveArgs(actualArgs || ""),
+          deployPath: runner.deployPath || null,
+          runConfigTemplate: runner.runConfigTemplate || null,
+          forceUnicode: runner.forceUnicode,
+        },
+      });
+      
+      // Only set runner.running for 'exe' to trigger the Stop toggle and Output session
+      if (actualTarget === 'exe') {
+        runner.running = true;
+      }
   } catch (e: any) {
     toast.error(String(e));
     termState.active = 'main';
@@ -2674,8 +2841,10 @@ onMounted(async () => {
 
   // Background Cloud Sync Polling:
   // Automatically pull updates from other machines every 3 minutes
-  cloudSyncInterval = window.setInterval(() => {
+  cloudSyncInterval = window.setInterval(async () => {
     if (syncService.value && syncStatus.value === 'idle') {
+      const ok = await ensureValidBacklogToken();
+      if (!ok) return;
       console.log("[Sync] Periodic background pull...");
       // Trigger a PULL-only sync (skipPush = true)
       void syncProfilesWithCloudflare(undefined, true);
@@ -2948,6 +3117,9 @@ onUnmounted(() => {
                        <Layers class="size-4 text-primary" /> PROFILES
                     </div>
                     <div v-if="selectedProfile && selectedProfile.owner" class="text-[9px] px-2 py-0.5 rounded-full bg-muted font-medium uppercase tracking-tighter">{{ selectedProfile.owner }}</div>
+                    <div v-if="selectedProfile && !canEditSelected" class="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 font-bold uppercase tracking-tighter flex items-center gap-1">
+                      <Lock class="size-2.5" /> Read Only
+                    </div>
                     
                     <!-- Professional Profile Sync Status -->
                     <div v-if="selectedProfile && selectedProfile.owner === currentUser" class="flex items-center gap-1">
@@ -2955,15 +3127,30 @@ onUnmounted(() => {
                            :class="syncStatus === 'saving' ? 'bg-amber-500/10 text-amber-500' : syncStatus === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-500'">
                         <RefreshCw v-if="syncStatus === 'saving'" class="size-2.5 animate-spin" />
                         <Cloud v-else class="size-2.5" />
-                        <span>{{ syncStatus === 'saving' ? 'Cloud Syncing...' : syncStatus === 'error' ? 'Sync Error' : 'Cloud Protected' }}</span>
+                        <span v-if="syncStatus === 'saving'">Cloud Syncing...</span>
+                        <span v-else-if="syncStatus === 'error'">Sync Error</span>
+                        <span v-else>Cloud Protected <span v-if="lastSyncTime" class="opacity-40 ml-1 font-medium">({{ new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }})</span></span>
                       </div>
                       <Button v-if="syncStatus !== 'saving'" 
                               variant="ghost" 
                               size="icon" 
                               class="h-5 w-5 rounded-full hover:bg-muted text-muted-foreground/30 hover:text-primary transition-all p-0" 
                               title="Refresh from Cloud" 
-                              @click="() => syncProfilesWithCloudflare()">
+                              @click="() => syncProfilesWithCloudflare(undefined, false, true)">
                         <RefreshCw class="size-2.5" />
+                      </Button>
+
+                      <div class="h-3 w-px bg-border mx-1 opacity-20"></div>
+
+                      <Button 
+                        v-if="syncService"
+                        variant="ghost" 
+                        size="icon" 
+                        class="h-5 w-5 rounded-full hover:bg-muted text-muted-foreground/30 hover:text-primary transition-all p-0" 
+                        title="View Version History" 
+                        @click="showHistoryDialog = true"
+                      >
+                        <History class="size-2.5" />
                       </Button>
                     </div>
                   </div>
@@ -3056,7 +3243,10 @@ onUnmounted(() => {
                                 ]"
                                 @click="selectedSetupId = setup.id">
                             <div class="flex items-center justify-between w-full mb-1">
-                              <div class="text-[13px] font-bold leading-tight text-foreground/90 group-hover/item:text-primary transition-colors wrap-break-word">{{ setup.name }}</div>
+                              <div class="text-[13px] font-bold leading-tight text-foreground/90 group-hover/item:text-primary transition-colors wrap-break-word flex items-center gap-2">
+                                {{ setup.name }}
+                                <RefreshCw v-if="setup.id === selectedSetupId && isFetchingProfile" class="size-3 animate-spin text-primary" />
+                              </div>
                               <div class="flex items-center gap-1.5 opacity-40 group-hover/item:opacity-100 transition-opacity">
                                 <!-- Cloud Icon for owned profiles -->
                                 <Cloud v-if="setup.owner === currentUser" 
@@ -3150,6 +3340,17 @@ onUnmounted(() => {
                           </template>
                         </div>
                         <div class="flex items-center gap-2 pt-1.5 shrink-0">
+                          <Button 
+                            v-if="syncService"
+                            variant="ghost" 
+                            size="icon" 
+                            class="h-8 w-8 rounded-lg hover:bg-primary/10 text-primary transition-all opacity-60 hover:opacity-100"
+                            title="View History"
+                            @click="showHistoryDialog = true"
+                          >
+                            <History class="size-4" />
+                          </Button>
+
                           <Button 
                             v-if="backlogIssueUrl"
                             variant="ghost" 
@@ -3300,31 +3501,77 @@ onUnmounted(() => {
                           </div>
 
 
-                        <div class="space-y-3">
-                          <div class="space-y-1.5">
-                            <Label class="text-[9px] text-muted-foreground uppercase font-bold pl-0.5 flex items-center gap-1.5"><TerminalSquare class="size-3.5 text-primary opacity-80" /> Test (BAT) File</Label>
+                        <div class="space-y-3 pt-2 mt-2 border-t border-border/40">
+                          <div class="flex items-center justify-between px-0.5">
+                            <Label class="text-[10px] font-bold text-muted-foreground uppercase flex items-center gap-1.5">
+                              <TerminalSquare class="size-3.5 text-primary opacity-80" /> 
+                              <span class="opacity-80">Test Configuration</span>
+                            </Label>
+                            <div v-if="canEditSelected" class="flex items-center bg-muted/50 p-0.5 rounded-md border shadow-inner">
+                              <button @click="runner.isExeTestMode = false" 
+                                      :class="!runner.isExeTestMode ? 'bg-background shadow-sm text-foreground ring-1 ring-black/5 dark:ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
+                                      class="px-2.5 py-0.5 rounded-sm text-[9px] font-bold transition-all uppercase tracking-wider">
+                                BAT Mode
+                              </button>
+                              <button @click="runner.isExeTestMode = true" 
+                                      :class="runner.isExeTestMode ? 'bg-background shadow-sm text-foreground ring-1 ring-black/5 dark:ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
+                                      class="px-2.5 py-0.5 rounded-sm text-[9px] font-bold transition-all uppercase tracking-wider">
+                                EXE Mode
+                              </button>
+                            </div>
+                          </div>
+
+                          <div v-if="!runner.isExeTestMode" class="space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-300">
                             <div class="flex gap-1.5 h-9">
                               <div class="flex-1 relative flex items-center">
-                                <Input v-model="runner.batFilePath" class="font-mono pr-8 h-full" :disabled="!canEditSelected" />
+                                <Input v-model="runner.batFilePath" placeholder="Path to .bat file" class="font-mono pr-8 h-full text-[11px]" :disabled="!canEditSelected" />
                                 <Beaker class="absolute right-2.5 size-3 opacity-30" />
                               </div>
                               <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile" :disabled="!canEditSelected"><FolderOpen class="size-4" /></Button>
                             </div>
+                            <div class="flex items-center justify-end pr-1 mt-1.5">
+                              <label class="flex items-center gap-1.5 cursor-pointer group select-none">
+                                <div class="relative flex items-center justify-center">
+                                  <input type="checkbox" v-model="runner.forceUnicode" :disabled="!canEditSelected" class="peer sr-only" />
+                                  <div class="w-6 h-3.5 bg-muted-foreground/30 rounded-full peer-checked:bg-primary/80 transition-colors shadow-inner border border-border/50"></div>
+                                  <div class="absolute left-[2px] size-2.5 bg-background rounded-full shadow-sm transform transition-transform peer-checked:translate-x-[10px] border border-border/50"></div>
+                                </div>
+                                <span class="text-[9px] font-bold tracking-wide uppercase transition-colors" :class="runner.forceUnicode ? 'text-primary/90' : 'text-muted-foreground/60 group-hover:text-muted-foreground'">
+                                  Shift-JIS (932)
+                                </span>
+                              </label>
+                            </div>
                           </div>
+                          
                           <div class="space-y-1.5 pb-2">
-                            <Label class="flex items-center gap-1 text-[9px] text-muted-foreground uppercase font-bold pl-0.5">
-                              BAT Arguments 
-                              <span class="opacity-50 normal-case tracking-normal font-medium text-[8.5px] lowercase">(passed to .bat during TEST)</span>
-                            </Label>
-                            <div class="relative flex items-center group/args">
-                              <Input ref="argsInputRef" v-model="runner.runArgs" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
-                              <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
-                                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="!canEditSelected">
-                                  <Clock class="size-3" />
-                                </Button>
-                                <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder" :disabled="!canEditSelected">
-                                  <Monitor class="size-3" />
-                                </Button>
+                            <div class="flex flex-col mb-2 px-1">
+                              <Label class="text-[9px] font-bold text-muted-foreground uppercase mb-1.5 pl-0.5 flex items-center gap-1.5">
+                                <span class="opacity-70">{{ runner.isExeTestMode ? 'EXE ARGUMENTS' : 'BAT ARGUMENTS' }}</span> 
+                                <span class="text-[8px] opacity-40 normal-case font-normal leading-none">{{ runner.isExeTestMode ? '(passed to .exe during TEST)' : '(passed to .bat during TEST)' }}</span>
+                              </Label>
+                              
+                              <div v-if="!runner.isExeTestMode" class="relative flex items-center group/args animate-in fade-in slide-in-from-right-2 duration-300">
+                                <Input ref="argsInputRefBat" v-model="runner.runArgs" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
+                                <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="!canEditSelected">
+                                    <Clock class="size-3" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder" :disabled="!canEditSelected">
+                                    <Monitor class="size-3" />
+                                  </Button>
+                                </div>
+                              </div>
+                              
+                              <div v-else class="relative flex items-center group/args animate-in fade-in slide-in-from-right-2 duration-300">
+                                <Input ref="argsInputRefExe" v-model="runner.exeArgs" placeholder="1 2 3 4 5 ..." class="pr-20 selection:bg-primary/30 selection:text-primary" :disabled="!canEditSelected" />
+                                <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder" :disabled="!canEditSelected">
+                                    <Clock class="size-3" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder" :disabled="!canEditSelected">
+                                    <Monitor class="size-3" />
+                                  </Button>
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -3528,7 +3775,7 @@ onUnmounted(() => {
                                       : 'text-zinc-700 cursor-not-allowed opacity-40')"
                                     :disabled="!canTest || !!runner.loadingTarget || !!runner.buildStatus"
                                     @click="dotnet('run', 'bat')">
-                              <component :is="runner.loadingTarget === 'bat' ? RotateCcw : Beaker"
+                              <component :is="runner.loadingTarget === 'bat' ? RotateCcw : (runner.isExeTestMode ? TerminalSquare : Beaker)"
                                          :class="[
                                            'size-5 transition-transform duration-300',
                                            runner.loadingTarget === 'bat' ? 'animate-spin' : 'group-hover/btn:-rotate-12'
@@ -3603,6 +3850,14 @@ onUnmounted(() => {
       </Tabs>
     </main>
     <Toaster richColors position="bottom-right" closeButton expand />
+
+    <ProfileHistory 
+      v-model:open="showHistoryDialog"
+      :profile="selectedProfile"
+      :syncService="syncService"
+      :canEdit="canEditSelected"
+      @restore="restoreVersion"
+    />
 
     <!-- Premium Global Hotkey Dialog -->
     <Dialog :open="showHotkeySettings" @update:open="val => { showHotkeySettings = val; if(!val) stopRecordingShortcut(); }">

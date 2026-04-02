@@ -1,14 +1,26 @@
 // No special import needed for standard fetch in Tauri v2 if not using proxying characteristics.
 
+export type SyncProfileMetadata = {
+  id: string;
+  owner_id: string;
+  name: string;
+  version: number;
+  updated_at: string;
+};
+
 export type SyncProfile = {
   id: string;
   name: string;
   content: any;
+  version?: number;
 };
 
 export type SyncResult = {
   success: boolean;
   error?: string;
+  server_version?: number;
+  client_version?: number;
+  version?: number;
 };
 
 export class SyncService {
@@ -43,10 +55,11 @@ export class SyncService {
     }
   }
 
-  async getProfiles(): Promise<any[]> {
-    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles`, {
+  async getProfiles(): Promise<SyncProfileMetadata[]> {
+    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles?t=${Date.now()}`, {
       method: 'GET',
-      headers: this.headers
+      headers: this.headers,
+      cache: 'no-cache'
     });
     if (!res.ok) {
       throw new Error(await this.handleError(res));
@@ -56,9 +69,10 @@ export class SyncService {
   }
   
   async getProfile(id: string): Promise<any> {
-    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles/${id}`, {
+    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles/${id}?t=${Date.now()}`, {
       method: 'GET',
-      headers: this.headers
+      headers: this.headers,
+      cache: 'no-cache'
     });
     if (!res.ok) {
       if (res.status === 404) return null;
@@ -73,22 +87,42 @@ export class SyncService {
     return data;
   }
 
+  async getHistory(id: string): Promise<any[]> {
+    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles/${id}/history`, {
+      method: 'GET',
+      headers: this.headers
+    });
+    if (!res.ok) {
+      throw new Error(await this.handleError(res));
+    }
+    const data = await res.json();
+    return Array.isArray(data) ? data : (data.results || data.data || []);
+  }
+
+  async deleteProfile(id: string): Promise<boolean> {
+    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles/${id}`, {
+      method: 'DELETE',
+      headers: this.headers
+    });
+    if (!res.ok) {
+      throw new Error(await this.handleError(res));
+    }
+    return true;
+  }
+
   async upsertProfile(profile: SyncProfile): Promise<SyncResult> {
     const res = await window.fetch(`${this.baseUrl}/api/v1/profiles`, {
       method: 'POST',
       headers: this.headers,
       body: JSON.stringify(profile)
     });
-    if (!res.ok) return { success: false, error: await this.handleError(res) };
-    return { success: true };
-  }
-
-  async deleteProfile(id: string): Promise<SyncResult> {
-    const res = await window.fetch(`${this.baseUrl}/api/v1/profiles/${id}`, {
-      method: 'DELETE',
-      headers: this.headers
-    });
-    if (!res.ok) return { success: false, error: await this.handleError(res) };
-    return { success: true };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { 
+      success: false, 
+      error: data.error || await this.handleError(res),
+      server_version: data.server_version,
+      client_version: data.client_version
+    };
+    return { success: true, version: data.version };
   }
 }

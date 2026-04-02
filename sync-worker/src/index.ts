@@ -82,11 +82,11 @@ const authMiddleware = async (c: any, next: any) => {
 // Apply auth to all /api/v1 routes
 app.use('/api/v1/*', authMiddleware);
 
-// GET /api/v1/profiles - Get ALL profiles (anyone can see)
+// GET /api/v1/profiles - Get profiles METADATA ONLY (anyone can see)
 app.get('/api/v1/profiles', async (c) => {
   try {
     const { results } = await c.env.DB.prepare(`
-      SELECT * FROM profiles
+      SELECT id, owner_id, name, version, updated_at FROM profiles
     `).all();
 
     return c.json(results);
@@ -113,11 +113,29 @@ app.get('/api/v1/profiles/:id', async (c) => {
   }
 });
 
-// POST /api/v1/profiles - Upsert a profile
+// GET /api/v1/profiles/:id/history - Get profile version history
+app.get('/api/v1/profiles/:id/history', async (c) => {
+  const id = c.req.param('id');
+  try {
+    const { results } = await c.env.DB.prepare(`
+      SELECT ph.*, u.name as modifier_name 
+      FROM profile_history ph
+      JOIN users u ON ph.modifier_id = u.id
+      WHERE profile_id = ?1
+      ORDER BY version DESC
+    `).bind(id).all();
+
+    return c.json(results);
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// POST /api/v1/profiles - Upsert a profile with version check (Optimistic Locking)
 app.post('/api/v1/profiles', async (c) => {
   const user = c.get('user') as any;
   const body = await c.req.json() as any;
-  const { id, name, content } = body;
+  const { id, name, content, version } = body;
 
   if (!id || !name || !content) {
     return c.json({ error: 'Missing id, name or content' }, 400);
@@ -125,7 +143,7 @@ app.post('/api/v1/profiles', async (c) => {
 
   try {
     // Check if profile exists
-    const existing = await c.env.DB.prepare('SELECT owner_id FROM profiles WHERE id = ?1')
+    const existing = await c.env.DB.prepare('SELECT owner_id, version FROM profiles WHERE id = ?1')
       .bind(id).first() as any;
 
     if (existing) {
@@ -133,15 +151,39 @@ app.post('/api/v1/profiles', async (c) => {
       if (existing.owner_id !== user.id) {
         return c.json({ error: 'No permission to edit this profile. Only the owner can make changes.' }, 403);
       }
+
+      // Optimistic Locking: Client version must match current server version
+      // (Exception: if client sends version 0 or undefined, maybe they're trying to overwrite? 
+      // Better to enforce version for robustness.)
+      if (version !== undefined && version !== existing.version) {
+        return c.json({ 
+          error: 'Conflict: Version mismatch', 
+          server_version: existing.version,
+          client_version: version
+        }, 409);
+      }
     }
 
-    // Upsert profile
-    await c.env.DB.prepare(
-      'INSERT INTO profiles (id, owner_id, name, content, updated_at) VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET name=?3, content=?4, updated_at=CURRENT_TIMESTAMP'
-    ).bind(id, user.id, name, JSON.stringify(content)).run();
+    const nextVersion = existing ? (existing.version + 1) : 1;
+    const contentStr = JSON.stringify(content);
 
-    return c.json({ success: true });
+    // Atomic transaction: Update profile and insert history
+    // Since D1 batch is supported:
+    const stmts = [
+      c.env.DB.prepare(
+        'INSERT INTO profiles (id, owner_id, name, content, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET name=?3, content=?4, version=?5, updated_at=CURRENT_TIMESTAMP'
+      ).bind(id, user.id, name, contentStr, nextVersion),
+      
+      c.env.DB.prepare(
+        'INSERT INTO profile_history (profile_id, content, version, modifier_id) VALUES (?1, ?2, ?3, ?4)'
+      ).bind(id, contentStr, nextVersion, user.id)
+    ];
+
+    await c.env.DB.batch(stmts);
+
+    return c.json({ success: true, version: nextVersion });
   } catch (e: any) {
+    console.error('Upsert Error:', e.message);
     return c.json({ error: e.message }, 500);
   }
 });
