@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { AlertCircle, LogOut } from "lucide-vue-next";
 import { 
   Select, 
@@ -16,6 +16,7 @@ defineProps<{
   apiKey: string;
   status: "idle" | "loading" | "success" | "error";
   profile: BacklogProfile | null;
+  avatarUrl?: string;
   projects: BacklogProject[];
   selectedProjectKey: string;
   error: string;
@@ -72,6 +73,7 @@ function initials(name: string) {
 
         <div class="group flex items-center gap-2.5 pl-1.5 pr-1.5 py-1 bg-card/40 hover:bg-card/80 rounded-full border border-black/5 dark:border-white/5 shadow-sm transition-all duration-500 cursor-default ring-1 ring-transparent hover:ring-primary/20 backdrop-blur-md ml-1">
           <Avatar class="h-8 w-8 ml-0.5 shadow-[0_2px_10px_rgba(0,0,0,0.1)] ring-2 ring-transparent group-hover:ring-primary/20 transition-all duration-300">
+            <AvatarImage v-if="avatarUrl" :src="avatarUrl" />
             <AvatarFallback class="bg-linear-to-br from-primary/80 to-primary text-primary-foreground text-[11px] font-bold">
               {{ initials(profile.name || "U") }}
             </AvatarFallback>

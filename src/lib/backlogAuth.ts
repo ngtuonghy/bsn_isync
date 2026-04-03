@@ -335,6 +335,9 @@ export type BacklogIssue = {
   issueKey: string;
   summary: string;
   issueType: BacklogIssueType;
+  assignee?: { id: number; name: string } | null;
+  parentIssueId?: number | null;
+  status?: { id: number; name: string; color: string } | null;
 };
 
 export async function fetchBacklogIssue(
@@ -378,8 +381,28 @@ export async function fetchBacklogIssueTypes(
   }
 }
 
+export async function fetchBacklogUserIcon(
+  params: { host: string; accessToken: string; userId: number; fetchFn?: typeof fetch }
+): Promise<{ status: "success"; blobUrl: string } | { status: "error"; error: string }> {
+  const baseUrl = buildBacklogBaseUrl(params.host);
+  if (!baseUrl) return { status: "error", error: "Backlog host không hợp lệ" };
+  
+  const fetchImpl = params.fetchFn ?? fetch;
+  try {
+    const res = await fetchImpl(`${baseUrl}/api/v2/users/${params.userId}/icon`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+    });
+    if (!res.ok) return { status: "error", error: `Lỗi fetch user icon (${res.status})` };
+    const blob = await res.blob();
+    return { status: "success", blobUrl: URL.createObjectURL(blob) };
+  } catch (e: any) {
+    return { status: "error", error: String(e) };
+  }
+}
+
 export async function fetchBacklogIssues(
-  params: { host: string; accessToken: string; projectId?: number; assigneeId?: number; fetchFn?: typeof fetch }
+  params: { host: string; accessToken: string; projectId?: number; assigneeId?: number; keyword?: string; parentIssueId?: string | number; fetchFn?: typeof fetch }
 ): Promise<{ status: "success"; issues: BacklogIssue[] } | { status: "error"; error: string }> {
   const baseUrl = buildBacklogBaseUrl(params.host);
   if (!baseUrl) return { status: "error", error: "Backlog host không hợp lệ" };
@@ -391,6 +414,12 @@ export async function fetchBacklogIssues(
   }
   if (params.assigneeId) {
     searchParams.append("assigneeId[]", String(params.assigneeId));
+  }
+  if (params.keyword) {
+    searchParams.append("keyword", params.keyword);
+  }
+  if (params.parentIssueId) {
+    searchParams.append("parentIssueId[]", String(params.parentIssueId));
   }
   searchParams.append("count", "100");
 
