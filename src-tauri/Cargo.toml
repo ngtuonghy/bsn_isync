@@ -1,6 +1,6 @@
 [package]
 name = "bsn_isync"
-version = "0.1.21"
+version = "0.1.22"
 description = "A tool to sync Backlog and local tasks"
 authors = ["ngtuonhy"]
 edition = "2021"
@@ -35,4 +35,4 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
 urlencoding = "2.1"
 tauri-plugin-store = "2"
-tauri-plugin-fs = "2"
+tauri-plugin-fs = { version = "2", features = ["watch"] }
