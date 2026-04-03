@@ -10,7 +10,7 @@ import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { writeTextFile, watch as fsWatch } from "@tauri-apps/plugin-fs";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { register as registerShortcut, unregister as unregisterShortcut, isRegistered } from "@tauri-apps/plugin-global-shortcut";
@@ -205,6 +205,7 @@ type ProjectProfile = {
   exeArgs?: string;
   isExeTestMode?: boolean;
   forceUnicode?: boolean;
+  autoWatchBat?: boolean;
   sqlSetupPath: string;
   sqlServer?: string;
   sqlDatabase?: string;
@@ -1106,6 +1107,7 @@ const runner = reactive({
   exeArgs: "",
   isExeTestMode: false,
   forceUnicode: true,
+  autoWatchBat: true,
   sqlSetupPath: "",
   sqlServer: localStorage.getItem("bsn_isync:global_sql_server") || "",
   sqlDatabase: localStorage.getItem("bsn_isync:global_sql_db") || "Arkbell_01",
@@ -1230,6 +1232,40 @@ async function checkSqlConnection(manual = false) {
   }
 }
 
+
+let unwatchBatFile: any;
+
+async function setupBatWatcher() {
+  if (unwatchBatFile) {
+    unwatchBatFile();
+    unwatchBatFile = undefined;
+  }
+  
+  if (!runner.autoWatchBat) return;
+  
+  const filesToWatch = [runner.batFilePath, ...(runner.batFiles || [])].filter(b => b && b.trim());
+  if (filesToWatch.length === 0) return;
+
+  try {
+    unwatchBatFile = await fsWatch(filesToWatch, (event) => {
+      const typeStr = JSON.stringify(event.type);
+      if (typeStr.includes('modify') || typeStr.includes('any')) {
+        if (!runner.loadingTarget && !runner.buildStatus) {
+          toast.info("BAT file changed, auto-running test...");
+          sendNotification({ title: 'BSN iSync', body: 'BAT file changed. Auto-running test...' });
+          dotnet('run', 'bat');
+        }
+      }
+    }, { delayMs: 500 });
+  } catch (e) {
+    console.error("Failed to watch bat files", e);
+  }
+}
+
+watch(() => [runner.autoWatchBat, runner.batFilePath, runner.batFiles], () => {
+  setupBatWatcher();
+}, { deep: true });
+
 // Watch for SQL context changes to auto-test
 watch(
   () => [runner.sqlServer, runner.sqlDatabase, runner.sqlUser, runner.sqlPassword, runner.useWindowsAuth],
@@ -1256,7 +1292,7 @@ onClickOutside(hotkeyContainerRef, () => {
 // --- Autosave logic ---
 watch(() => {
   const { 
-    running, loadingTarget, logs, childPid, buildStatus, isExeTestMode, forceUnicode,
+    running, loadingTarget, logs, childPid, buildStatus, isExeTestMode, forceUnicode, autoWatchBat,
     // Exclude SQL settings from profile persistence
     sqlServer, sqlDatabase, sqlUser, sqlPassword, useWindowsAuth,
     ...rest 
@@ -1543,6 +1579,7 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     exeArgs: runner.exeArgs,
     isExeTestMode: runner.isExeTestMode,
     forceUnicode: runner.forceUnicode,
+    autoWatchBat: runner.autoWatchBat,
     sqlSetupPath: runner.sqlSetupPath,
     sqlServer: runner.sqlServer,
     sqlDatabase: runner.sqlDatabase,
@@ -1597,6 +1634,7 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.exeArgs = setup.exeArgs || "";
   runner.isExeTestMode = setup.isExeTestMode || false;
   runner.forceUnicode = setup.forceUnicode ?? true;
+  runner.autoWatchBat = setup.autoWatchBat ?? true;
   runner.deployPath = toAbs(setup.deployPath || "");
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
@@ -1772,12 +1810,12 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
           const idx = setupProfiles.value.findIndex(p => p.id === targetId);
           if (idx !== -1) {
             const current = setupProfiles.value[idx];
-            setupProfiles.value[idx] = { ...content, version: serverVersion, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true };
+            setupProfiles.value[idx] = { ...content, version: serverVersion, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true, autoWatchBat: current.autoWatchBat };
           } else {
-            setupProfiles.value.push({ ...content, version: serverVersion, forceUnicode: true });
+            setupProfiles.value.push({ ...content, version: serverVersion, forceUnicode: true, autoWatchBat: true });
           }
           // Update hash to avoid immediate re-push
-          const { updatedAt, version, isExeTestMode, forceUnicode, ...hashable } = content;
+          const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, ...hashable } = content;
           profileHashes.set(targetId!, JSON.stringify(hashable));
           profilesChanged = true;
           if (targetId === selectedSetupId.value) currentProfilePulled = true;
@@ -1814,9 +1852,9 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
             setupProfiles.value.push({ ...content, version: cp.version, forceUnicode: true });
           } else {
             const current = setupProfiles.value[idx];
-            setupProfiles.value[idx] = { ...content, version: cp.version, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true };
+            setupProfiles.value[idx] = { ...content, version: cp.version, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true, autoWatchBat: current.autoWatchBat };
           }
-          const { updatedAt, version, isExeTestMode, forceUnicode, ...hashable } = content;
+          const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, ...hashable } = content;
           profileHashes.set(cp.id, JSON.stringify(hashable));
           profilesChanged = true;
           if (cp.id === selectedSetupId.value) currentProfilePulled = true;
@@ -1859,7 +1897,7 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
       const pushProfile = async (p: ProjectProfile) => {
         if (p.owner !== currentUser.value) return;
 
-        const { updatedAt, version, isExeTestMode, forceUnicode, ...hashable } = p;
+        const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, ...hashable } = p;
         const currentContentStr = JSON.stringify(hashable);
         const lastHash = profileHashes.get(p.id);
         if (lastHash === currentContentStr) return;
@@ -2025,6 +2063,7 @@ function saveCurrentToSelectedSetupProfile() {
   setup.exeArgs = runner.exeArgs;
   setup.isExeTestMode = runner.isExeTestMode;
   setup.forceUnicode = runner.forceUnicode;
+  setup.autoWatchBat = runner.autoWatchBat;
   setup.sqlSetupPath = runner.sqlSetupPath;
   // Deliberately omitted sqlServer to prevent syncing local workstation host configs to cloud
   setup.sqlDatabase = runner.sqlDatabase;
@@ -2113,6 +2152,7 @@ function createNewSetupProfile() {
   runner.exeArgs = "";
   runner.isExeTestMode = false;
   runner.forceUnicode = true;
+  runner.autoWatchBat = true;
   selectedProjectRoot.value = "";
   
   // Clear Backlog issue links for a fresh start
@@ -2478,10 +2518,12 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
           termState.active = 'main';
           nextTick(() => termState.main.fit?.fit());
         } else {
-          runId = `run-${Date.now()}`;
+          runId = `run-1`;
           if (!termState.terminals.includes(runId)) {
             termState.terminals.push(runId);
             termState[runId] = { term: null as any, fit: null as any, name: runName };
+          } else {
+            termState[runId].name = runName;
           }
           termState.active = runId;
           await nextTick();
@@ -2501,11 +2543,16 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
         tasks.push({ target: actualTarget, batPath: null, ptyId: runId, name: runName, args: actualTarget.includes('exe') ? "" : actualArgs });
       } else {
         for (let i = 0; i < allBats.length; i++) {
+          let tName = i === 0 ? runName : `${actualTarget === 'bat' ? 'BAT' : 'EXE'} ${i+1}`;
+          if (!useSharedTerminal && allBats[i]) {
+            const m = allBats[i].match(/([^\\]+)\.bat$/i);
+            if (m) tName = m[1];
+          }
           tasks.push({
             target: actualTarget,
             batPath: allBats[i],
-            ptyId: i === 0 ? runId : `run-${Date.now()}-${actualTarget}-${i}`,
-            name: i === 0 ? runName : `${actualTarget === 'bat' ? 'BAT' : 'EXE'} ${i+1}`,
+            ptyId: useSharedTerminal ? 'main' : (i === 0 ? runId : `run-${i + 1}`),
+            name: tName,
             args: actualTarget.includes('exe') ? "" : (i === 0 ? actualArgs : (runner.batFilesArgs?.[i - 1] || ""))
           });
         }
@@ -2514,6 +2561,10 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
       for (let i = 0; i < tasks.length; i++) {
         const task = tasks[i];
         
+        if (task.ptyId !== 'main' && termState[task.ptyId]) {
+          termState[task.ptyId].name = task.name;
+        }
+
         if (task.ptyId !== runId) {
           if (!termState.terminals.includes(task.ptyId)) {
             termState.terminals.push(task.ptyId);
@@ -2530,8 +2581,6 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
           await new Promise(r => setTimeout(r, 1000)); // Stagger delay
         }
 
-        const forceExeRoot = runner.workspaceRoot.replace(/[\\/]$/, "") + "\\Arkbell.Console\\Arkbell.Console.ReceiveBatchAction";
-        const forceExeProj = forceExeRoot + "\\Arkbell.Console.ReceiveBatchAction.csproj";
         const isAppRun = actualTarget === 'exe' || actualTarget === 'test_exe';
         
         let taskAliasExeName = runner.aliasExeName;
@@ -2558,8 +2607,8 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
 
         await invoke("dotnet_run_start", {
           request: {
-            projectRoot: isAppRun ? forceExeRoot : runner.projectRoot,
-            startupProject: isAppRun ? forceExeProj : runner.startupProject,
+            projectRoot: runner.projectRoot,
+            startupProject: runner.startupProject,
             urls: runner.urls || null,
             buildConfig: runner.config,
             aliasExeName: taskAliasExeName,
@@ -3198,11 +3247,13 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unregisterAllShortcuts();
+  unregisterAllShortcuts();
   if (backlogRefreshInterval) window.clearInterval(backlogRefreshInterval);
   if (cloudSyncInterval) window.clearInterval(cloudSyncInterval);
   if (unlistenRunnerLog) unlistenRunnerLog();
   if (unlistenBuildStatus) unlistenBuildStatus();
   if (runnerPollTimer) window.clearInterval(runnerPollTimer);
+  if (unwatchBatFile) unwatchBatFile();
 });
 
 </script>
@@ -4090,10 +4141,12 @@ onUnmounted(() => {
               <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl">
                 <!-- Header with Session Switcher -->
                 <div class="px-3 py-1 flex items-center justify-between gap-4 border-b bg-muted/50 shrink-0 w-full min-w-0">
-                  <div class="flex items-center gap-3 flex-1 min-w-0 overflow-hidden">
+                  <div class="flex items-center gap-3 shrink-0">
                     <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mr-2">Terminal</span>
-                    
-                    <div class="flex items-center gap-1 bg-background/50 p-1 rounded-md border shadow-inner flex-nowrap overflow-x-auto flex-1 min-w-0 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" v-if="termState.terminals && termState.terminals.length > 1">
+                  </div>
+
+                  <div class="flex items-center justify-end gap-3 flex-1 min-w-0 overflow-hidden">
+                    <div class="flex items-center gap-1 bg-background/50 p-1 rounded-md border shadow-inner flex-nowrap overflow-x-auto min-w-0 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] ml-auto max-w-full" v-if="termState.terminals && termState.terminals.length > 1">
                       <button v-for="(tId, idx) in (termState.terminals || [])" :key="tId"
                               @click="termState.active = tId" 
                               :class="termState.active === tId ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
@@ -4101,9 +4154,8 @@ onUnmounted(() => {
                         {{ idx + 1 }} {{ tId === 'main' ? 'Shell' : (termState[tId]?.name || 'Run ' + idx) }}
                       </button>
                     </div>
-                  </div>
-                  <div class="flex items-center gap-2 shrink-0">
-                    <div class="flex items-center gap-1 border-l ml-1 pl-1">
+
+                    <div class="flex items-center gap-1 border-l ml-1 pl-1 shrink-0">
                       <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-muted-foreground hover:text-primary transition-colors" title="Jump to Project Root" @click="cdToRoot">
                         <Home class="size-3" />
                       </Button>
@@ -4112,14 +4164,14 @@ onUnmounted(() => {
                   </div>
                 </div>
 
-                <div class="flex-1 flex flex-row min-h-0 min-w-0 bg-card relative">
+                <div class="flex-1 flex flex-row min-h-0 min-w-0 bg-card relative overflow-hidden">
                   <!-- Main Shell Viewport -->
-                  <div v-show="termState.active === 'main'" ref="mainTermRef" class="flex-1 terminal-custom-scroll"></div>
+                  <div v-show="termState.active === 'main'" ref="mainTermRef" class="flex-1 min-w-0 overflow-hidden terminal-custom-scroll"></div>
                   
                   <!-- Run Output Viewport -->
-                  <div v-for="tId in (termState.terminals || []).filter((t: any) => t !== 'main')" :key="tId" v-show="termState.active === tId" :id="'term-' + tId" class="flex-1 terminal-custom-scroll"></div>
+                  <div v-for="tId in (termState.terminals || []).filter((t: any) => t !== 'main')" :key="tId" v-show="termState.active === tId" :id="'term-' + tId" class="flex-1 min-w-0 overflow-hidden terminal-custom-scroll"></div>
                     <!-- Premium Vertical Execution Sidebar -->
-                  <div class="w-14 border-l bg-muted/40 flex flex-col shrink-0 overflow-y-auto scrollbar-none">
+                  <div class="w-14 border-l bg-muted/40 flex flex-col shrink-0 overflow-y-auto scrollbar-none z-10 relative">
                     <TooltipProvider>
                       <div class="flex-1"></div>
 
@@ -4210,7 +4262,7 @@ onUnmounted(() => {
                                            'size-5 transition-transform duration-300',
                                            runner.loadingTarget === 'bat' ? 'animate-spin' : 'group-hover/btn:-rotate-12'
                                          ]" />
-                              <span class="text-[8px] uppercase tracking-wide font-bold">{{ runner.loadingTarget === 'bat' ? '...' : 'Test' }}</span>
+                              <span class="text-[7px] uppercase tracking-wide font-bold truncate max-w-[46px] text-center">{{ runner.loadingTarget === 'bat' ? '...' : 'Test' }}</span>
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent side="left" :side-offset="12">
