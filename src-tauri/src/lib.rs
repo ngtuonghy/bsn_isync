@@ -899,12 +899,13 @@ fn dotnet_run_start(
             }
             
             let mut target_abs = startup_abs.clone();
-            if let Some(rba) = get_receive_batch_action(&startup_abs) {
-                let rba_fp = project_source_fingerprint(&rba).unwrap_or(0);
-                let rba_key = normalize_path(&rba);
-                let prev_rba_fp = state.0.lock().unwrap().fingerprints.get(&rba_key).copied().unwrap_or(0);
+            if request.target.as_deref() != Some("test_exe") {
+                if let Some(rba) = get_receive_batch_action(&startup_abs) {
+                    let rba_fp = project_source_fingerprint(&rba).unwrap_or(0);
+                    let rba_key = normalize_path(&rba);
+                    let prev_rba_fp = state.0.lock().unwrap().fingerprints.get(&rba_key).copied().unwrap_or(0);
 
-                if prev_rba_fp != rba_fp {
+                    if prev_rba_fp != rba_fp {
                     let _ = app.emit("build-status", "building_rba");
                     let _ = app.emit("runner-log", "[UPDATE] Updating ReceiveBatchAction...");
                     let mut rba_build = new_command("dotnet");
@@ -925,11 +926,12 @@ fn dotnet_run_start(
                         let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction failed (code {})", rba_out.code));
                         return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
                     }
-                    if let Ok(mut guard) = state.0.lock() {
-                        guard.fingerprints.insert(rba_key, rba_fp);
+                        if let Ok(mut guard) = state.0.lock() {
+                            guard.fingerprints.insert(rba_key, rba_fp);
+                        }
                     }
+                    target_abs = rba;
                 }
-                target_abs = rba;
             }
 
             if let Some(copy_msg) = copy_alias_exe_and_config(
@@ -944,17 +946,19 @@ fn dotnet_run_start(
             )? {
                 let _ = app.emit("runner-log", copy_msg);
             }
-            if let Some(copy_msg) = copy_alias_exe_and_config(
-                &root,
-                &target_abs, // Apply run config to RBA output path
-                &config,
-                request.alias_exe_name.as_ref(),
-                None,
-                request.run_config_template.as_ref(),
-                request.deploy_path.as_ref(),
-                request.bat_file_path.as_ref(),
-            )? {
-                let _ = app.emit("runner-log", copy_msg);
+            if request.target.as_deref() != Some("test_exe") {
+                if let Some(copy_msg) = copy_alias_exe_and_config(
+                    &root,
+                    &target_abs, // Apply run config to RBA output path
+                    &config,
+                    request.alias_exe_name.as_ref(),
+                    None,
+                    request.run_config_template.as_ref(),
+                    request.deploy_path.as_ref(),
+                    request.bat_file_path.as_ref(),
+                )? {
+                    let _ = app.emit("runner-log", copy_msg);
+                }
             }
             let mut guard2 = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
             guard2.fingerprints.insert(state_key.clone(), source_fp);
@@ -963,8 +967,10 @@ fn dotnet_run_start(
     }
 
     let mut target_abs = startup_abs.clone();
-    if let Some(rba) = get_receive_batch_action(&startup_abs) {
-        target_abs = rba;
+    if request.target.as_deref() != Some("test_exe") {
+        if let Some(rba) = get_receive_batch_action(&startup_abs) {
+            target_abs = rba;
+        }
     }
 
     let mut actual_bat_path = request.bat_file_path.clone();
@@ -1038,24 +1044,30 @@ fn dotnet_run_start(
     );
 
     // Also update RBA alias and config
-    if let Some(rba) = get_receive_batch_action(&startup_abs) {
-        let _ = copy_alias_exe_and_config(
-            &root,
-            &rba,
-            &config,
-            request.alias_exe_name.as_ref(),
-            None,
-            run_config_template.as_ref(),
-            request.deploy_path.as_ref(),
-            actual_bat_path.as_ref(),
-        );
+    if request.target.as_deref() != Some("test_exe") {
+        if let Some(rba) = get_receive_batch_action(&startup_abs) {
+            let _ = copy_alias_exe_and_config(
+                &root,
+                &rba,
+                &config,
+                request.alias_exe_name.as_ref(),
+                None,
+                run_config_template.as_ref(),
+                request.deploy_path.as_ref(),
+                actual_bat_path.as_ref(),
+            );
+        }
     }
 
-    let alias = request.alias_exe_name
-        .as_ref()
-        .map(|x| x.trim().to_string())
-        .filter(|x| !x.is_empty())
-        .unwrap_or_default();
+    let alias = if request.target.as_deref() == Some("test_exe") {
+        String::new()
+    } else {
+        request.alias_exe_name
+            .as_ref()
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .unwrap_or_default()
+    };
     
     let run_project_abs = if request.target.as_deref() == Some("test_exe") {
         &startup_abs

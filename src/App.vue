@@ -2502,7 +2502,7 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
     let runId = "";
     let runName = "";
     try {
-      const useSharedTerminal = actualTarget === 'bat';
+      const useSharedTerminal = actualTarget === 'bat' || actualTarget === 'test_exe';
       if (actualTarget === 'exe' || actualTarget === 'test_exe' || actualTarget === 'bat') {
         runName = actualTarget === 'bat' ? 'BAT' : 'EXE';
         if (actualTarget === 'bat' && runner.activeRunArgId) {
@@ -2535,12 +2535,14 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
         }
       }
 
-      const allBats = [runner.batFilePath, ...(runner.batFiles || [])].filter(b => b && b.trim());
+      const allBats = isExeTest 
+        ? [runner.batFilePath].filter(b => b && b.trim()) 
+        : [runner.batFilePath, ...(runner.batFiles || [])].filter(b => b && b.trim());
       
       const tasks: { target: string, batPath: string | null, ptyId: string, name: string, args: string }[] = [];
       
       if (allBats.length === 0) {
-        tasks.push({ target: actualTarget, batPath: null, ptyId: runId, name: runName, args: actualTarget.includes('exe') ? "" : actualArgs });
+        tasks.push({ target: actualTarget, batPath: null, ptyId: runId, name: runName, args: actualTarget === 'exe' ? "" : actualArgs });
       } else {
         for (let i = 0; i < allBats.length; i++) {
           let tName = i === 0 ? runName : `${actualTarget === 'bat' ? 'BAT' : 'EXE'} ${i+1}`;
@@ -2553,7 +2555,7 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
             batPath: allBats[i],
             ptyId: useSharedTerminal ? 'main' : (i === 0 ? runId : `run-${i + 1}`),
             name: tName,
-            args: actualTarget.includes('exe') ? "" : (i === 0 ? actualArgs : (runner.batFilesArgs?.[i - 1] || ""))
+            args: actualTarget === 'exe' ? "" : (i === 0 ? actualArgs : (runner.batFilesArgs?.[i - 1] || ""))
           });
         }
       }
@@ -2591,7 +2593,7 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
           const m = task.batPath.match(/([^\\]+)\.bat$/i);
           if (m) {
             const msmq = m[1];
-            if (isAppRun) {
+            if (isAppRun && actualTarget !== 'test_exe') {
               taskAliasExeName = `${msmq}.exe`;
             }
             if (taskConfigTemplate) {
