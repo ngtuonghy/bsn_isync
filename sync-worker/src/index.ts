@@ -143,7 +143,7 @@ app.post('/api/v1/profiles', async (c) => {
 
   try {
     // Check if profile exists
-    const existing = await c.env.DB.prepare('SELECT owner_id, version FROM profiles WHERE id = ?1')
+    const existing = await c.env.DB.prepare('SELECT owner_id, version, updated_at FROM profiles WHERE id = ?1')
       .bind(id).first() as any;
 
     if (existing) {
@@ -164,20 +164,46 @@ app.post('/api/v1/profiles', async (c) => {
       }
     }
 
-    const nextVersion = existing ? (existing.version + 1) : 1;
+    let shouldCoalesce = false;
+    if (existing && existing.updated_at) {
+      // Parse SQLite's CURRENT_TIMESTAMP (YYYY-MM-DD HH:MM:SS) as UTC
+      const lastUpdate = new Date(existing.updated_at.replace(' ', 'T') + 'Z').getTime();
+      const now = Date.now();
+      // If the last edit was by the same user within 10 minutes, coalesce it into the same version
+      if (now - lastUpdate < 10 * 60 * 1000 && existing.owner_id === user.id) {
+        shouldCoalesce = true;
+      }
+    }
+
+    const nextVersion = shouldCoalesce ? existing.version : (existing ? (existing.version + 1) : 1);
     const contentStr = JSON.stringify(content);
 
     // Atomic transaction: Update profile and insert history
-    // Since D1 batch is supported:
-    const stmts = [
-      c.env.DB.prepare(
-        'INSERT INTO profiles (id, owner_id, name, content, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET name=?3, content=?4, version=?5, updated_at=CURRENT_TIMESTAMP'
-      ).bind(id, user.id, name, contentStr, nextVersion),
-      
-      c.env.DB.prepare(
-        'INSERT INTO profile_history (profile_id, content, version, modifier_id) VALUES (?1, ?2, ?3, ?4)'
-      ).bind(id, contentStr, nextVersion, user.id)
-    ];
+    const stmts = [];
+
+    if (shouldCoalesce) {
+      stmts.push(
+        c.env.DB.prepare(
+          'UPDATE profiles SET name=?2, content=?3, updated_at=CURRENT_TIMESTAMP WHERE id=?1'
+        ).bind(id, name, contentStr)
+      );
+      stmts.push(
+        c.env.DB.prepare(
+          'UPDATE profile_history SET content=?2 WHERE profile_id=?1 AND version=?3'
+        ).bind(id, contentStr, nextVersion)
+      );
+    } else {
+      stmts.push(
+        c.env.DB.prepare(
+          'INSERT INTO profiles (id, owner_id, name, content, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET name=?3, content=?4, version=?5, updated_at=CURRENT_TIMESTAMP'
+        ).bind(id, user.id, name, contentStr, nextVersion)
+      );
+      stmts.push(
+        c.env.DB.prepare(
+          'INSERT INTO profile_history (profile_id, content, version, modifier_id) VALUES (?1, ?2, ?3, ?4)'
+        ).bind(id, contentStr, nextVersion, user.id)
+      );
+    }
 
     await c.env.DB.batch(stmts);
 

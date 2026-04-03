@@ -72,8 +72,9 @@ import 'xterm/css/xterm.css';
 const mainTermRef = ref<HTMLElement | null>(null);
 const runTermRef = ref<HTMLElement | null>(null);
 
-const termState = reactive({
-  active: 'main' as 'main' | 'run',
+const termState = reactive<Record<string, any>>({
+  active: 'main',
+  terminals: ['main'],
   main: { term: null as Terminal | null, fit: null as FitAddon | null },
   run: { term: null as Terminal | null, fit: null as FitAddon | null }
 });
@@ -145,6 +146,40 @@ const canRun = computed(() => {
   return !runner.running && runner.projectRoot && runner.startupProject && runner.aliasExeName && runner.batFilePath;
 });
 
+const currentBatArgId = computed({
+  get: () => {
+    if (runner.activeBatConfigIndex === 0) return runner.activeRunArgId;
+    const idx = runner.activeBatConfigIndex - 1;
+    return runner.batFilesActiveArgIds?.[idx] || "";
+  },
+  set: (val: string) => {
+    if (runner.activeBatConfigIndex === 0) {
+      runner.activeRunArgId = val;
+    } else {
+      const idx = runner.activeBatConfigIndex - 1;
+      if (!runner.batFilesActiveArgIds) runner.batFilesActiveArgIds = [];
+      runner.batFilesActiveArgIds[idx] = val;
+    }
+  }
+});
+
+const currentBatArgs = computed({
+  get: () => {
+    if (runner.activeBatConfigIndex === 0) return runner.runArgs;
+    const idx = runner.activeBatConfigIndex - 1;
+    return runner.batFilesArgs?.[idx] || "";
+  },
+  set: (val: string) => {
+    if (runner.activeBatConfigIndex === 0) {
+      runner.runArgs = val;
+    } else {
+      const idx = runner.activeBatConfigIndex - 1;
+      if (!runner.batFilesArgs) runner.batFilesArgs = [];
+      runner.batFilesArgs[idx] = val;
+    }
+  }
+});
+
 
 type CommandResult = {
   code: number;
@@ -163,6 +198,9 @@ type ProjectProfile = {
   urls: string;
   aliasExeName: string;
   batFilePath: string;
+  batFiles?: string[];
+  batFilesActiveArgIds?: string[];
+  batFilesArgs?: string[];
   runArgs?: string;
   exeArgs?: string;
   isExeTestMode?: boolean;
@@ -178,6 +216,12 @@ type ProjectProfile = {
   connectionStringTemplate?: string;
   sqlSnippets?: { id: string; name: string; content: string }[];
   activeSqlSnippetId?: string;
+  runArgSnippets?: { id: string; name: string; content: string; batPath?: string; batConfigIndex?: number }[];
+  activeRunArgId?: string;
+  selectedRunArgIds?: string[];
+  exeArgSnippets?: { id: string; name: string; content: string; batPath?: string; batConfigIndex?: number }[];
+  activeExeArgId?: string;
+  selectedExeArgIds?: string[];
   sync?: any;
   backlogProjectKey?: string;
   backlogIssueTypeId?: number;
@@ -274,6 +318,7 @@ async function checkForUpdates(manual = false) {
 }
 
 const isNotificationEnabled = ref(true);
+const isTerminalHistoryEnabled = ref(false);
 const syncStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 const isFetchingProfile = ref(false);
 const lastSyncTime = ref<number | null>(null);
@@ -367,6 +412,7 @@ async function loadUIState() {
     if (state.profileScope) profileScope.value = state.profileScope;
     if (state.workspaceRoot) runner.workspaceRoot = state.workspaceRoot;
     if (state.isNotificationEnabled !== undefined) isNotificationEnabled.value = state.isNotificationEnabled;
+    if (state.isTerminalHistoryEnabled !== undefined) isTerminalHistoryEnabled.value = state.isTerminalHistoryEnabled;
     if (state.shortcuts) {
       // Merge with defaults to ensure new shortcut keys (test, run) are present
       Object.assign(runner.shortcuts, {
@@ -435,6 +481,7 @@ async function saveUIState() {
       profileScope: profileScope.value,
       workspaceRoot: runner.workspaceRoot,
       isNotificationEnabled: isNotificationEnabled.value,
+      isTerminalHistoryEnabled: isTerminalHistoryEnabled.value,
       shortcuts: runner.shortcuts,
       backlog: {
         host: backlog.host,
@@ -819,6 +866,120 @@ function selectBacklogIssue(issue: BacklogIssue) {
   runner.backlogIssueSummary = issue.summary;
 }
 
+
+const isNamingArgSnippet = ref(false);
+const namingArgSnippetMode = ref<'create' | 'rename'>('create');
+const namingArgSnippetValue = ref('');
+const namingArgSnippetTarget = ref<'bat' | 'exe'>('bat');
+const currentBatArgSnippets = computed(() => {
+  return runner.runArgSnippets.filter(s => s.batConfigIndex === runner.activeBatConfigIndex || (s.batConfigIndex === undefined && runner.activeBatConfigIndex === 0));
+});
+const namingArgSnippetTitle = computed(() => namingArgSnippetMode.value === 'create' ? 'Create New Argument' : 'Rename Argument');
+
+
+function removeBatConfig(idx: number) {
+  if (!runner.batFiles) return;
+  runner.batFiles.splice(idx, 1);
+  const deletedIndex = idx + 1;
+  runner.runArgSnippets = runner.runArgSnippets.filter(s => s.batConfigIndex !== deletedIndex);
+  runner.runArgSnippets.forEach(s => {
+    if (s.batConfigIndex !== undefined && s.batConfigIndex > deletedIndex) {
+      s.batConfigIndex -= 1;
+    }
+  });
+  if (runner.batFilesArgs) {
+    runner.batFilesArgs.splice(idx, 1);
+  }
+  if (runner.batFilesActiveArgIds) {
+    runner.batFilesActiveArgIds.splice(idx, 1);
+  }
+  if (runner.activeBatConfigIndex === deletedIndex) {
+    runner.activeBatConfigIndex = 0;
+  } else if (runner.activeBatConfigIndex > deletedIndex) {
+    runner.activeBatConfigIndex -= 1;
+  }
+}
+
+function startNamingArgSnippet(mode: 'create' | 'rename', target: 'bat' | 'exe') {
+  namingArgSnippetMode.value = mode;
+  namingArgSnippetTarget.value = target;
+  if (mode === 'create') {
+    namingArgSnippetValue.value = 'New Argument';
+  } else {
+    const list = target === 'bat' ? runner.runArgSnippets : runner.exeArgSnippets;
+    const activeId = target === 'bat' ? currentBatArgId.value : runner.activeExeArgId;
+    const snippet = list.find(s => s.id === activeId);
+    namingArgSnippetValue.value = snippet?.name || '';
+  }
+  isNamingArgSnippet.value = true;
+}
+
+function commitArgSnippetName() {
+  const name = namingArgSnippetValue.value.trim();
+  if (!name) return;
+  const target = namingArgSnippetTarget.value;
+  const list = target === 'bat' ? runner.runArgSnippets : runner.exeArgSnippets;
+
+  if (namingArgSnippetMode.value === 'create') {
+    const id = "arg_" + Date.now();
+    list.push({ id, name, content: '', batConfigIndex: target === 'bat' ? runner.activeBatConfigIndex : undefined, batPath: target === 'bat' ? (runner.activeBatConfigIndex === 0 ? runner.batFilePath : (runner.batFiles?.[runner.activeBatConfigIndex - 1] || '')) : undefined });
+    if (target === 'bat') {
+      currentBatArgId.value = id;
+      currentBatArgs.value = "";
+    } else {
+      runner.activeExeArgId = id;
+      runner.exeArgs = "";
+    }
+  } else {
+    const activeId = target === 'bat' ? currentBatArgId.value : runner.activeExeArgId;
+    const snippet = list.find(s => s.id === activeId);
+    if (snippet) snippet.name = name;
+  }
+  isNamingArgSnippet.value = false;
+}
+
+function deleteActiveArgSnippet(target: 'bat' | 'exe') {
+  const list = target === 'bat' ? runner.runArgSnippets : runner.exeArgSnippets;
+  const activeId = target === 'bat' ? currentBatArgId.value : runner.activeExeArgId;
+  const idx = list.findIndex(s => s.id === activeId);
+  if (idx === -1) return;
+  if (!confirm(`Delete argument "${list[idx].name}"?`)) return;
+  list.splice(idx, 1);
+  
+  if (target === 'bat') {
+    if (currentBatArgSnippets.value.length > 0) {
+      currentBatArgId.value = currentBatArgSnippets.value[0].id;
+      currentBatArgs.value = currentBatArgSnippets.value[0].content;
+    } else {
+      currentBatArgId.value = "";
+      currentBatArgs.value = "";
+    }
+  } else {
+    if (list.length > 0) {
+      runner.activeExeArgId = list[0].id;
+      runner.exeArgs = list[0].content;
+    } else {
+      runner.activeExeArgId = "";
+      runner.exeArgs = "";
+    }
+  }
+}
+
+function onArgSnippetSelected(target: 'bat' | 'exe', snippetId: string) {
+  const list = target === 'bat' ? runner.runArgSnippets : runner.exeArgSnippets;
+  const s = list.find(s => s.id === snippetId);
+  if (s) {
+    if (target === 'bat') {
+      currentBatArgId.value = snippetId;
+      currentBatArgs.value = s.content;
+    } else {
+      runner.activeExeArgId = snippetId;
+      runner.exeArgs = s.content;
+      if (s.batPath) runner.batFilePath = s.batPath;
+    }
+  }
+}
+
 const isNamingSqlSnippet = ref(false);
 const namingSqlSnippetMode = ref<'create' | 'rename'>('create');
 const namingSqlSnippetValue = ref('');
@@ -937,6 +1098,10 @@ const runner = reactive({
   config: "Debug",
   aliasExeName: "",
   batFilePath: "",
+  batFiles: [] as string[],
+  activeBatConfigIndex: 0,
+  batFilesActiveArgIds: [] as string[],
+  batFilesArgs: [] as string[],
   runArgs: "",
   exeArgs: "",
   isExeTestMode: false,
@@ -949,6 +1114,12 @@ const runner = reactive({
   useWindowsAuth: localStorage.getItem("bsn_isync:global_sql_winauth") === "false" ? false : true,
   sqlSnippets: [] as { id: string; name: string; content: string }[],
   activeSqlSnippetId: "",
+  runArgSnippets: [] as { id: string; name: string; content: string; batPath?: string; batConfigIndex?: number }[],
+  activeRunArgId: "",
+  selectedRunArgIds: [] as string[],
+  exeArgSnippets: [] as { id: string; name: string; content: string; batPath?: string; batConfigIndex?: number }[],
+  activeExeArgId: "",
+  selectedExeArgIds: [] as string[],
   buildStatus: null as string | null,
   configTemplate: `<?xml version="1.0" encoding="utf-8"?>
 <configuration>
@@ -1199,7 +1370,13 @@ function insertHostnamePlaceholder() {
 function applyConfigSyncToTemplates() {
   if (runner.loadingTarget) return;
 
-  const msmq = runner.aliasExeName.replace(/\.exe$/i, "");
+  let msmq = runner.aliasExeName.replace(/\.exe$/i, "");
+  const batIndex = runner.activeBatConfigIndex || 0;
+  const activeBatPath = batIndex === 0 ? runner.batFilePath : (runner.batFiles?.[batIndex - 1] || runner.batFilePath);
+  if (activeBatPath) {
+    const m = activeBatPath.match(/([^\\]+)\.bat$/i);
+    if (m) msmq = m[1];
+  }
   
   const syncTemplate = (tpl: string) => {
     if (!tpl) return tpl;
@@ -1216,7 +1393,7 @@ function applyConfigSyncToTemplates() {
     
     // 1. AppSettings Sync
     t = t.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
-    t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${runner.batFilePath || '.\\' }$3`);
+    t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${activeBatPath || '.\\' }$3`);
     
     if (runner.sqlServer) {
         t = t.replace(/(<add\s+key="Report\.DBServer"\s+value=")([^"]*)("\s*\/>)/gi, `$1${runner.sqlServer}$3`);
@@ -1292,10 +1469,11 @@ function applyConfigSyncToTemplates() {
 
 watch(
   () => [
-    runner.aliasExeName, runner.batFilePath, runner.sqlServer, runner.sqlDatabase, 
+    runner.aliasExeName, runner.batFilePath, runner.batFiles, runner.activeBatConfigIndex, runner.sqlServer, runner.sqlDatabase, 
     runner.connectionStringTemplate, runner.useWindowsAuth, runner.sqlUser, runner.sqlPassword
   ], 
-  applyConfigSyncToTemplates
+  applyConfigSyncToTemplates,
+  { deep: true }
 );
 
 // Auto-derive EXE Name from BAT Path silently
@@ -1358,6 +1536,9 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     urls: runner.urls,
     aliasExeName: runner.aliasExeName,
     batFilePath: toRel(runner.batFilePath),
+    batFiles: runner.batFiles ? [...runner.batFiles].map(toRel) : [],
+    batFilesActiveArgIds: runner.batFilesActiveArgIds ? [...runner.batFilesActiveArgIds] : [],
+    batFilesArgs: runner.batFilesArgs ? [...runner.batFilesArgs] : [],
     runArgs: runner.runArgs,
     exeArgs: runner.exeArgs,
     isExeTestMode: runner.isExeTestMode,
@@ -1373,6 +1554,10 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     connectionStringTemplate: runner.connectionStringTemplate,
     sqlSnippets: JSON.parse(JSON.stringify(runner.sqlSnippets)),
     activeSqlSnippetId: runner.activeSqlSnippetId,
+      runArgSnippets: JSON.parse(JSON.stringify(runner.runArgSnippets || [])),
+      activeRunArgId: runner.activeRunArgId,
+      exeArgSnippets: JSON.parse(JSON.stringify(runner.exeArgSnippets || [])),
+      activeExeArgId: runner.activeExeArgId,
     backlogProjectKey: runner.backlogProjectKey,
     backlogIssueTypeId: runner.backlogIssueTypeId,
     backlogIssueKey: runner.backlogIssueKey,
@@ -1405,6 +1590,9 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.urls = setup.urls || "";
   runner.aliasExeName = setup.aliasExeName || "";
   runner.batFilePath = toAbs(setup.batFilePath || "");
+  runner.batFiles = setup.batFiles ? [...setup.batFiles].map(toAbs) : [];
+  runner.batFilesActiveArgIds = setup.batFilesActiveArgIds ? [...setup.batFilesActiveArgIds] : [];
+  runner.batFilesArgs = setup.batFilesArgs ? [...setup.batFilesArgs] : [];
   runner.runArgs = setup.runArgs || "";
   runner.exeArgs = setup.exeArgs || "";
   runner.isExeTestMode = setup.isExeTestMode || false;
@@ -1429,6 +1617,30 @@ function applySetupToRunner(setup: ProjectProfile) {
   }
   
   runner.activeSqlSnippetId = setup.activeSqlSnippetId || (runner.sqlSnippets.length > 0 ? runner.sqlSnippets[0].id : "");
+
+  if (setup.runArgSnippets && setup.runArgSnippets.length > 0) {
+    runner.runArgSnippets = setup.runArgSnippets;
+  } else if (setup.runArgs) {
+    runner.runArgSnippets = [{ id: "default_run_arg_1", name: "Default Argument", content: setup.runArgs }];
+  } else {
+    runner.runArgSnippets = [];
+  }
+  runner.activeRunArgId = setup.activeRunArgId || (runner.runArgSnippets.length > 0 ? runner.runArgSnippets[0].id : "");
+  runner.selectedRunArgIds = setup.selectedRunArgIds || [];
+  const activeRunArg = runner.runArgSnippets.find(s => s.id === runner.activeRunArgId);
+  runner.runArgs = activeRunArg ? activeRunArg.content : (setup.runArgs || "");
+
+  if (setup.exeArgSnippets && setup.exeArgSnippets.length > 0) {
+    runner.exeArgSnippets = setup.exeArgSnippets;
+  } else if (setup.exeArgs) {
+    runner.exeArgSnippets = [{ id: "default_exe_arg_1", name: "Default Argument", content: setup.exeArgs }];
+  } else {
+    runner.exeArgSnippets = [];
+  }
+  runner.activeExeArgId = setup.activeExeArgId || (runner.exeArgSnippets.length > 0 ? runner.exeArgSnippets[0].id : "");
+  runner.selectedExeArgIds = setup.selectedExeArgIds || [];
+  const activeExeArg = runner.exeArgSnippets.find(s => s.id === runner.activeExeArgId);
+  runner.exeArgs = activeExeArg ? activeExeArg.content : (setup.exeArgs || "");
   // keep runner.sqlSetupPath synced for backward compatibility with rust backend or simple execution logic
   const activeSnippet = runner.sqlSnippets.find(s => s.id === runner.activeSqlSnippetId);
   runner.sqlSetupPath = activeSnippet ? activeSnippet.content : (setup.sqlSetupPath || "");
@@ -1464,12 +1676,7 @@ async function loadSetupsForCurrentRoot() {
     const normalized = raw.map((setup) => ({
       ...setup,
       owner: (setup as any).owner || currentUser.value,
-    })).filter((p, _, self) => {
-      // PRUNE GHOST PROFILES:
-      // Remove any that have no project root AND use a default name AND aren't the only one
-      const isPlaceholder = !p.projectRoot && /^Setup\s+\d+$/i.test(p.name);
-      if (isPlaceholder && self.length > 1) return false;
-      
+    })).filter((p, _, _self) => {
       // Deduplicate by ID
       if (seenIds.has(p.id)) return false;
       seenIds.add(p.id);
@@ -1496,9 +1703,9 @@ async function saveSetupsForCurrentRoot() {
 }
 
 let syncTimer: number | undefined;
-let lastSyncContext = { targetId: undefined as string | undefined, skipPush: false };
+let lastSyncContext = { targetId: undefined as string | undefined, skipPush: false, manual: false };
 
-function triggerSync(id?: string, skipPush = false) {
+function triggerSync(id?: string, skipPush = false, manual = false) {
   if (syncTimer) clearTimeout(syncTimer);
   
   const effectiveId = (id && id.trim()) ? id : undefined;
@@ -1510,12 +1717,12 @@ function triggerSync(id?: string, skipPush = false) {
     currentTargetId = undefined; // Upgrade to Full Sync
   }
   
-  lastSyncContext = { targetId: currentTargetId, skipPush };
+  lastSyncContext = { targetId: currentTargetId, skipPush, manual };
   
   syncTimer = window.setTimeout(async () => {
     const context = { ...lastSyncContext };
     // Reset context before execution so next triggers start fresh
-    lastSyncContext = { targetId: undefined, skipPush: false };
+    lastSyncContext = { targetId: undefined, skipPush: false, manual: false };
     
     const ok = await ensureValidBacklogToken();
     if (!ok) {
@@ -1524,7 +1731,7 @@ function triggerSync(id?: string, skipPush = false) {
     }
     
     syncStatus.value = context.skipPush ? 'idle' : 'saving';
-    await syncProfilesWithCloudflare(context.targetId, context.skipPush);
+    await syncProfilesWithCloudflare(context.targetId, context.skipPush, context.manual);
     syncTimer = undefined;
   }, 1000); 
 }
@@ -1582,10 +1789,6 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
       const profilesToPull: string[] = [];
 
       cloudMetas.forEach(meta => {
-        if (meta.id === "__global_backlog_settings__") {
-           profilesToPull.push(meta.id);
-           return;
-        }
         if (isTargetedSync && meta.id !== targetId) return;
 
         const deletedAt = deletedProfileIds.value.get(meta.id);
@@ -1594,7 +1797,8 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
         const local = localMap.get(meta.id);
         const serverVersion = Number(meta.version) || 0;
         const localVersion = Number(local?.version) || 0;
-        if (!local || serverVersion > localVersion) {
+        const forcePull = manual && local && local.owner !== currentUser.value;
+        if (!local || serverVersion > localVersion || forcePull) {
           profilesToPull.push(meta.id);
         }
       });
@@ -1604,24 +1808,9 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
         pullResults.forEach(cp => {
           if (!cp || !cp.content) return;
           const content = typeof cp.content === 'string' ? JSON.parse(cp.content) : cp.content;
-          
-          if (cp.id === "__global_backlog_settings__") {
-            const cloudUpdateAt = content.updatedAt || 0;
-            const localUpdateAt = backlog.updatedAt || 0;
-            if (cloudUpdateAt > localUpdateAt) {
-              if (backlog.status === 'loading') return;
-              Object.assign(backlog, content);
-              backlogChanged = true;
-            }
-            const { updatedAt, ...hashable } = content;
-            profileHashes.set("__global_backlog_settings__", JSON.stringify(hashable));
-            return;
-          }
 
           const idx = setupProfiles.value.findIndex(p => p.id === cp.id);
           if (idx === -1) {
-            const isPlaceholder = !content.projectRoot && /^Setup\s+\d+$/i.test(content.name);
-            if (isPlaceholder) return;
             setupProfiles.value.push({ ...content, version: cp.version, forceUnicode: true });
           } else {
             const current = setupProfiles.value[idx];
@@ -1667,28 +1856,6 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
 
     // --- 2. PUSH PHASE ---
     if (!skipPush) {
-      // 5. Push backlog settings if changed
-      const backlogContent = {
-        host: backlog.host,
-        apiKey: backlog.apiKey,
-        token: backlog.token,
-        profile: backlog.profile,
-        updatedAt: backlog.updatedAt || Date.now()
-      };
-      
-      const { updatedAt: _backlogUpd, ...backlogHashable } = backlogContent;
-      const backlogContentStr = JSON.stringify(backlogHashable);
-      const lastBacklogHash = profileHashes.get("__global_backlog_settings__");
-      
-      if (lastBacklogHash !== backlogContentStr) {
-        await syncService.value.upsertProfile({
-          id: "__global_backlog_settings__",
-          name: "Global Backlog Settings",
-          content: backlogContent
-        });
-        profileHashes.set("__global_backlog_settings__", backlogContentStr);
-      }
-
       const pushProfile = async (p: ProjectProfile) => {
         if (p.owner !== currentUser.value) return;
 
@@ -1718,7 +1885,7 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
         }
       };
 
-      if (isTargetedSync && targetId !== "__global_backlog_settings__") {
+      if (isTargetedSync) {
         const profile = setupProfiles.value.find(p => p.id === targetId);
         if (profile) await pushProfile(profile);
       } else if (isFullSync) {
@@ -1851,6 +2018,9 @@ function saveCurrentToSelectedSetupProfile() {
   setup.urls = runner.urls;
   setup.aliasExeName = runner.aliasExeName;
   setup.batFilePath = toRel(runner.batFilePath);
+  setup.batFiles = runner.batFiles ? [...runner.batFiles].map(toRel) : [];
+  setup.batFilesActiveArgIds = runner.batFilesActiveArgIds ? [...runner.batFilesActiveArgIds] : [];
+  setup.batFilesArgs = runner.batFilesArgs ? [...runner.batFilesArgs] : [];
   setup.runArgs = runner.runArgs;
   setup.exeArgs = runner.exeArgs;
   setup.isExeTestMode = runner.isExeTestMode;
@@ -1866,6 +2036,12 @@ function saveCurrentToSelectedSetupProfile() {
   setup.connectionStringTemplate = runner.connectionStringTemplate;
   setup.sqlSnippets = JSON.parse(JSON.stringify(runner.sqlSnippets));
   setup.activeSqlSnippetId = runner.activeSqlSnippetId;
+    setup.runArgSnippets = JSON.parse(JSON.stringify(runner.runArgSnippets));
+    setup.activeRunArgId = runner.activeRunArgId;
+    setup.selectedRunArgIds = JSON.parse(JSON.stringify(runner.selectedRunArgIds || []));
+    setup.exeArgSnippets = JSON.parse(JSON.stringify(runner.exeArgSnippets));
+    setup.activeExeArgId = runner.activeExeArgId;
+    setup.selectedExeArgIds = JSON.parse(JSON.stringify(runner.selectedExeArgIds || []));
   setup.sync = (() => {
     const { logs, ...syncData } = sync;
     return JSON.parse(JSON.stringify(syncData));
@@ -1930,6 +2106,9 @@ function createNewSetupProfile() {
   runner.startupProject = "";
   runner.aliasExeName = "";
   runner.batFilePath = "";
+  runner.batFiles = [];
+  runner.batFilesActiveArgIds = [];
+  runner.batFilesArgs = [];
   runner.runArgs = "";
   runner.exeArgs = "";
   runner.isExeTestMode = false;
@@ -1955,11 +2134,43 @@ function createNewSetupProfile() {
   const baseName = `Setup ${nextNum}`;
   const setup = buildSetupFromRunner(baseName);
   setupProfiles.value.push(setup);
+  selectedOwner.value = currentUser.value;
   selectedSetupId.value = setup.id;
   saveSetupsForCurrentRoot();
+  triggerSync(setup.id);
   preventAutoSearch.value = true;
   focusProfileName();
   setTimeout(() => { preventAutoSearch.value = false; }, 300);
+}
+
+function cloneSelectedSetupProfile() {
+  if (runner.running) return;
+  if (backlog.status !== 'success') {
+    toast.error("Backlog Login Required", {
+      description: "You need to log in to Backlog to use this feature.",
+      duration: 5000,
+    });
+    return;
+  }
+
+  const profileToClone = setupProfiles.value.find((x) => x.id === selectedSetupId.value);
+  if (!profileToClone) return;
+
+  const setup = JSON.parse(JSON.stringify(profileToClone));
+  setup.id = makeProfileId();
+  setup.name = `${setup.name} (Clone)`;
+  setup.owner = currentUser.value;
+  delete setup.version;
+
+  setupProfiles.value.push(setup);
+  selectedOwner.value = currentUser.value;
+  selectedSetupId.value = setup.id;
+  
+  applySetupToRunner(setup);
+  saveSetupsForCurrentRoot();
+  triggerSync(setup.id);
+  
+  toast.success("Profile Cloned", { description: "You can now edit your local copy." });
 }
 
 async function deleteSelectedSetupProfile() {
@@ -2100,14 +2311,16 @@ function toggleTheme() {
   else el.classList.remove("dark");
   
   const theme = dark.value ? TERMINAL_THEMES.dark : TERMINAL_THEMES.light;
-  if (termState.main.term) termState.main.term.options.theme = theme;
-  if (termState.run.term) termState.run.term.options.theme = theme;
+  termState.terminals.forEach((tId: string) => {
+    if (termState[tId]?.term) termState[tId].term.options.theme = theme;
+  });
 }
 
 function clearLogs() {
   runner.logs = [];
-  if (termState.main.term) termState.main.term.clear();
-  if (termState.run.term) termState.run.term.clear();
+  termState.terminals.forEach((tId: string) => {
+    if (termState[tId]?.term) termState[tId].term.clear();
+  });
 }
 
 async function cdToRoot() {
@@ -2217,7 +2430,7 @@ async function runDotnetAndCollect(mode: "restore" | "build") {
   await invoke("pty_write", { id: "main", data: cmd });
 }
 
-async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = "exe") {
+async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = "exe", overrideArgs?: string) {
   const loadingKey = cmd === "run" ? target : cmd;
   runner.loadingTarget = loadingKey;
   
@@ -2241,48 +2454,133 @@ async function dotnet(cmd: "restore" | "build" | "run", target: "exe" | "bat" = 
     return;
   }
     const isTestButton = cmd === "run" && target === "bat";
-    const actualTarget = (isTestButton && runner.isExeTestMode) ? "test_exe" : target;
-    const actualArgs = (isTestButton && runner.isExeTestMode) ? runner.exeArgs : runner.runArgs;
+    const isExeTest = isTestButton && runner.isExeTestMode;
+    const actualTarget = isExeTest ? "test_exe" : target;
+    const fallbackArgs = isExeTest ? runner.exeArgs : runner.runArgs;
+    const actualArgs = overrideArgs ?? (target === 'bat' && !isExeTest ? currentBatArgs.value : fallbackArgs);
 
-    // If target is 'bat', ensure we are in the 'main' (Shell) terminal
-    if (actualTarget === 'bat') {
-      termState.active = 'main';
-      nextTick(() => termState.main.fit?.fit());
-    }
-    
+    let runId = "";
+    let runName = "";
     try {
-      // Only Flip to Run terminal if target is 'exe'
-      if (actualTarget === 'exe' || actualTarget === 'test_exe') {
-        termState.active = 'run';
-        if (!termState.run.term && runTermRef.value) {
-          await initPty('run', runTermRef.value);
+      const useSharedTerminal = actualTarget === 'bat';
+      if (actualTarget === 'exe' || actualTarget === 'test_exe' || actualTarget === 'bat') {
+        runName = actualTarget === 'bat' ? 'BAT' : 'EXE';
+        if (actualTarget === 'bat' && runner.activeRunArgId) {
+          const snip = runner.runArgSnippets?.find(s => s.id === runner.activeRunArgId);
+          if (snip) runName = snip.name;
+        } else if (actualTarget !== 'bat' && runner.activeExeArgId) {
+          const snip = runner.exeArgSnippets?.find(s => s.id === runner.activeExeArgId);
+          if (snip) runName = snip.name;
         }
-        nextTick(() => termState.run.fit?.fit());
+
+        if (useSharedTerminal) {
+          runId = 'main';
+          termState.active = 'main';
+          nextTick(() => termState.main.fit?.fit());
+        } else {
+          runId = `run-${Date.now()}`;
+          if (!termState.terminals.includes(runId)) {
+            termState.terminals.push(runId);
+            termState[runId] = { term: null as any, fit: null as any, name: runName };
+          }
+          termState.active = runId;
+          await nextTick();
+          const el = document.getElementById('term-' + runId);
+          if (el && !termState[runId].term) {
+            await initPty(runId as any, el);
+          }
+          termState[runId].fit?.fit();
+        }
       }
 
-      await invoke("dotnet_run_start", {
-        request: {
-          projectRoot: runner.projectRoot,
-          startupProject: runner.startupProject,
-          urls: runner.urls || null,
-          buildConfig: runner.config,
-          aliasExeName: runner.aliasExeName,
-          batFilePath: runner.batFilePath || null,
-          target: actualTarget,
-          configTemplate: runner.configTemplate,
-          sqlSetupPath: runner.sqlSetupPath || null,
-          sqlServer: runner.sqlServer || null,
-          sqlDatabase: runner.sqlDatabase || null,
-          sqlUser: runner.sqlUser || null,
-          sqlPassword: runner.sqlPassword || null,
-          sqlUseWindowsAuth: runner.useWindowsAuth,
-          runArgs: resolveArgs(actualArgs || ""),
-          deployPath: runner.deployPath || null,
-          runConfigTemplate: runner.runConfigTemplate || null,
-          forceUnicode: runner.forceUnicode,
-        },
-      });
+      const allBats = [runner.batFilePath, ...(runner.batFiles || [])].filter(b => b && b.trim());
       
+      const tasks: { target: string, batPath: string | null, ptyId: string, name: string, args: string }[] = [];
+      
+      if (allBats.length === 0) {
+        tasks.push({ target: actualTarget, batPath: null, ptyId: runId, name: runName, args: actualTarget.includes('exe') ? "" : actualArgs });
+      } else {
+        for (let i = 0; i < allBats.length; i++) {
+          tasks.push({
+            target: actualTarget,
+            batPath: allBats[i],
+            ptyId: i === 0 ? runId : `run-${Date.now()}-${actualTarget}-${i}`,
+            name: i === 0 ? runName : `${actualTarget === 'bat' ? 'BAT' : 'EXE'} ${i+1}`,
+            args: actualTarget.includes('exe') ? "" : (i === 0 ? actualArgs : (runner.batFilesArgs?.[i - 1] || ""))
+          });
+        }
+      }
+
+      for (let i = 0; i < tasks.length; i++) {
+        const task = tasks[i];
+        
+        if (task.ptyId !== runId) {
+          if (!termState.terminals.includes(task.ptyId)) {
+            termState.terminals.push(task.ptyId);
+            termState[task.ptyId] = { term: null as any, fit: null as any, name: task.name };
+          }
+          termState.active = task.ptyId;
+
+          await nextTick();
+          const el = document.getElementById('term-' + task.ptyId);
+          if (el && !termState[task.ptyId].term) {
+            await initPty(task.ptyId as any, el);
+          }
+          termState[task.ptyId].fit?.fit();
+          await new Promise(r => setTimeout(r, 1000)); // Stagger delay
+        }
+
+        const forceExeRoot = runner.workspaceRoot.replace(/[\\/]$/, "") + "\\Arkbell.Console\\Arkbell.Console.ReceiveBatchAction";
+        const forceExeProj = forceExeRoot + "\\Arkbell.Console.ReceiveBatchAction.csproj";
+        const isAppRun = actualTarget === 'exe' || actualTarget === 'test_exe';
+        
+        let taskAliasExeName = runner.aliasExeName;
+        let taskConfigTemplate = runner.configTemplate;
+        let taskRunConfigTemplate = runner.runConfigTemplate;
+        
+        if (task.batPath) {
+          const m = task.batPath.match(/([^\\]+)\.bat$/i);
+          if (m) {
+            const msmq = m[1];
+            if (isAppRun) {
+              taskAliasExeName = `${msmq}.exe`;
+            }
+            if (taskConfigTemplate) {
+              taskConfigTemplate = taskConfigTemplate.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
+              taskConfigTemplate = taskConfigTemplate.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${task.batPath}$3`);
+            }
+            if (taskRunConfigTemplate) {
+              taskRunConfigTemplate = taskRunConfigTemplate.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
+              taskRunConfigTemplate = taskRunConfigTemplate.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${task.batPath}$3`);
+            }
+          }
+        }
+
+        await invoke("dotnet_run_start", {
+          request: {
+            projectRoot: isAppRun ? forceExeRoot : runner.projectRoot,
+            startupProject: isAppRun ? forceExeProj : runner.startupProject,
+            urls: runner.urls || null,
+            buildConfig: runner.config,
+            aliasExeName: taskAliasExeName,
+            batFilePath: task.batPath,
+            target: task.target,
+            configTemplate: taskConfigTemplate,
+            sqlSetupPath: runner.sqlSetupPath || null,
+            sqlServer: runner.sqlServer || null,
+            sqlDatabase: runner.sqlDatabase || null,
+            sqlUser: runner.sqlUser || null,
+            sqlPassword: runner.sqlPassword || null,
+            sqlUseWindowsAuth: runner.useWindowsAuth,
+            runArgs: resolveArgs(task.args),
+            deployPath: runner.deployPath || null,
+            runConfigTemplate: taskRunConfigTemplate,
+            forceUnicode: runner.forceUnicode,
+            ptyId: task.ptyId,
+          },
+        });
+      }
+
       // Only set runner.running for 'exe' to trigger the Stop toggle and Output session
       if (actualTarget === 'exe') {
         runner.running = true;
@@ -2318,6 +2616,7 @@ async function stop() {
   try {
     await invoke("dotnet_run_stop");
     runner.running = false;
+    termState.terminals = termState.terminals.filter((t: string) => t === 'main');
     termState.active = 'main';
     nextTick(() => termState.main.fit?.fit());
   } catch (e: any) {
@@ -2325,12 +2624,17 @@ async function stop() {
   }
 }
 
-async function browseBatFile() {
+async function browseBatFile(index?: number) {
   const workspace = runner.workspaceRoot;
   const defaultDir = `${workspace}\\batch`;
   const picked = await invoke("pick_file", { defaultPath: defaultDir }) as string | null;
   if (picked) {
-    runner.batFilePath = picked;
+    if (typeof index === 'number') {
+      if (!runner.batFiles) runner.batFiles = [];
+      runner.batFiles[index] = picked;
+    } else {
+      runner.batFilePath = picked;
+    }
     
     // Auto-fill EXE Name if it is currently empty based on chosen bat file
     if (!runner.aliasExeName.trim()) {
@@ -2339,8 +2643,15 @@ async function browseBatFile() {
         runner.aliasExeName = filenameMatch[0].replace(/\.[^/.]+$/, "") + ".exe";
       }
     }
+    const currentId = typeof index === 'number' ? (runner.batFilesActiveArgIds?.[index] || "") : runner.activeRunArgId;
+    const s = runner.runArgSnippets.find(x => x.id === currentId);
+    if(s) s.batPath = picked;
+    const s2 = runner.exeArgSnippets.find(x => x.id === runner.activeExeArgId);
+    if(s2) s2.batPath = picked;
   }
 }
+
+
 
 
 
@@ -2696,7 +3007,31 @@ async function initPty(id: 'main' | 'run', container: HTMLElement) {
   t.onData((data) => {
     invoke("pty_write", { id, data }).catch(() => {});
   });
+
+  termState[id as 'main' | 'run'].term = t;
+  
+  // Apply history setting on init
+  if (!isTerminalHistoryEnabled.value) {
+    invoke("pty_write", { id, data: `Set-PSReadLineOption -HistorySaveStyle SaveNothing\r` }).catch(() => {});
+  }
 }
+
+watch(isTerminalHistoryEnabled, (enabled) => {
+  const cmd = enabled 
+    ? `Set-PSReadLineOption -HistorySaveStyle SaveIncrementally\r` 
+    : `Set-PSReadLineOption -HistorySaveStyle SaveNothing\r`;
+  
+  termState.terminals.forEach((tId: string) => {
+    if (termState[tId]?.term) {
+      invoke("pty_write", { id: tId, data: cmd }).catch(() => {});
+    }
+  });
+  saveUIState();
+});
+
+watch(isNotificationEnabled, () => {
+  saveUIState();
+});
 
 onMounted(async () => {
   // 1. Initialize environment status
@@ -2780,7 +3115,7 @@ onMounted(async () => {
 
 
   unlistenRunnerLog = await listen<string>("runner-log", (event) => {
-    const t = termState.active === 'main' ? termState.main.term : termState.run.term;
+    const t = termState[termState.active]?.term;
     if (t) {
       // Process multi-line payloads and trim trailing carriage returns to prevent overlap
       const lines = event.payload.split(/\r?\n/);
@@ -2809,12 +3144,9 @@ onMounted(async () => {
   });
 
   listen("pty-out", (event: any) => {
-    const payload = event.payload;
-    const { id, data } = payload;
-    if (id === 'main' && termState.main.term) {
-      termState.main.term.write(data);
-    } else if (id === 'run' && termState.run.term) {
-      termState.run.term.write(data);
+    const { id, data } = event.payload;
+    if (termState[id]?.term) {
+      termState[id].term.write(data);
     }
   });
 
@@ -2825,12 +3157,10 @@ onMounted(async () => {
 
   const ro = new ResizeObserver(() => {
     try { 
-      if (termState.active === 'main') {
-        termState.main.fit?.fit();
-        invoke("resize_pty", { id: 'main', rows: termState.main.term?.rows, cols: termState.main.term?.cols }).catch(() => {});
-      } else {
-        termState.run.fit?.fit();
-        invoke("resize_pty", { id: 'run', rows: termState.run.term?.rows, cols: termState.run.term?.cols }).catch(() => {});
+      const tId = termState.active;
+      if (termState[tId]?.fit && termState[tId]?.term) {
+        termState[tId].fit.fit();
+        invoke("resize_pty", { id: tId, rows: termState[tId].term.rows, cols: termState[tId].term.cols }).catch(() => {});
       }
     } catch {}
   });
@@ -2983,6 +3313,17 @@ onUnmounted(() => {
             <Sun v-else class="size-4 text-yellow-500" />
           </Button>
           
+          <Button @click="isTerminalHistoryEnabled = !isTerminalHistoryEnabled" 
+                  variant="ghost" 
+                  size="icon" 
+                  class="h-7 w-7 transition-all hover:bg-zinc-100 dark:hover:bg-white/5 rounded-lg group/term-hist relative" 
+                  :title="isTerminalHistoryEnabled ? 'Terminal History Enabled' : 'Terminal History Disabled'">
+            <History v-if="isTerminalHistoryEnabled" class="size-4 text-primary animate-in zoom-in-50 duration-300" />
+            <History v-else class="size-4 text-muted-foreground opacity-50 animate-in zoom-in-50 duration-300" />
+            <div v-if="!isTerminalHistoryEnabled" class="absolute inset-0 m-auto h-0.5 w-4 bg-muted-foreground/50 rotate-45 rounded-full"></div>
+            <div v-if="isTerminalHistoryEnabled" class="absolute top-1 right-1 size-1.5 bg-primary rounded-full ring-2 ring-background animate-pulse"></div>
+          </Button>
+
           <Button @click="isNotificationEnabled = !isNotificationEnabled" 
                   variant="ghost" 
                   size="icon" 
@@ -3124,43 +3465,47 @@ onUnmounted(() => {
                        <Layers class="size-4 text-primary" /> PROFILES
                     </div>
                     <div v-if="selectedProfile && selectedProfile.owner" class="text-[9px] px-2 py-0.5 rounded-full bg-muted font-medium uppercase tracking-tighter">{{ selectedProfile.owner }}</div>
-                    <div v-if="selectedProfile && !canEditSelected" class="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 font-bold uppercase tracking-tighter flex items-center gap-1">
-                      <Lock class="size-2.5" /> Local Edit
+                    <div v-if="selectedProfile && !canEditSelected" class="flex items-center gap-1.5">
+                      <div class="text-[10px] px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-500 font-bold uppercase tracking-tighter flex items-center gap-1.5 border border-amber-500/20 shadow-xs">
+                        <Lock class="size-3" /> Local Edit
+                      </div>
+                      <Button 
+                        v-if="syncService"
+                        variant="outline" 
+                        size="sm" 
+                        class="h-6 px-3 rounded-full hover:bg-amber-500/10 text-amber-600 hover:text-amber-700 border-amber-500/20 transition-all gap-1.5 text-[10px] font-bold tracking-tight shadow-xs bg-transparent" 
+                        title="Force Pull Latest from Cloud" 
+                        :disabled="syncStatus === 'saving'"
+                        @click="triggerSync(selectedSetupId, false, true)"
+                      >
+                        <RefreshCw v-if="syncStatus === 'saving'" class="size-3 animate-spin text-amber-500" />
+                        <Cloud v-else class="size-3" />
+                        <span>Pull Latest</span>
+                      </Button>
                     </div>
                     
                     <!-- Professional Profile Sync Status -->
-                    <div v-if="selectedProfile && selectedProfile.owner === currentUser" class="flex items-center gap-1">
-                      <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-tighter transition-all"
-                           :class="syncStatus === 'saving' ? 'bg-amber-500/10 text-amber-500' : syncStatus === 'error' ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-500'">
-                        <RefreshCw v-if="syncStatus === 'saving'" class="size-2.5 animate-spin" />
-                        <Cloud v-else class="size-2.5" />
+                    <div v-if="selectedProfile && selectedProfile.owner === currentUser" class="flex items-center gap-1.5">
+                      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-tighter transition-all border shadow-xs"
+                           :class="syncStatus === 'saving' ? 'bg-amber-500/10 text-amber-600 border-amber-500/20' : syncStatus === 'error' ? 'bg-destructive/10 text-destructive border-destructive/20' : 'bg-green-500/10 text-green-600 border-green-500/20'">
+                        <RefreshCw v-if="syncStatus === 'saving'" class="size-3 animate-spin" />
+                        <Cloud v-else class="size-3" />
                         <span v-if="syncStatus === 'saving'">Cloud Syncing...</span>
                         <span v-else-if="syncStatus === 'error'">Sync Error</span>
-                        <span v-else>Cloud Protected <span v-if="lastSyncTime" class="opacity-40 ml-1 font-medium">({{ new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }})</span></span>
+                        <span v-else>Cloud Protected <span v-if="lastSyncTime" class="opacity-70 ml-1 font-semibold">({{ new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }})</span></span>
                       </div>
                       <Button v-if="syncStatus !== 'saving'" 
-                              variant="ghost" 
-                              size="icon" 
-                              class="h-5 w-5 rounded-full hover:bg-muted text-muted-foreground/30 hover:text-primary transition-all p-0" 
+                              variant="outline" 
+                              size="sm" 
+                              class="h-6 px-3 rounded-full hover:bg-green-500/10 text-green-600 hover:text-green-700 border-green-500/20 transition-all gap-1.5 text-[10px] font-bold tracking-tight shadow-xs bg-transparent" 
                               title="Refresh from Cloud" 
                               @click="() => syncProfilesWithCloudflare(undefined, false, true)">
-                        <RefreshCw class="size-2.5" />
-                      </Button>
-
-                      <div class="h-3 w-px bg-border mx-1 opacity-20"></div>
-
-                      <Button 
-                        v-if="syncService"
-                        variant="ghost" 
-                        size="icon" 
-                        class="h-5 w-5 rounded-full hover:bg-muted text-muted-foreground/30 hover:text-primary transition-all p-0" 
-                        title="View Version History" 
-                        @click="showHistoryDialog = true"
-                      >
-                        <History class="size-2.5" />
+                        <RefreshCw class="size-3" />
+                        <span>Sync</span>
                       </Button>
                     </div>
                   </div>
+
                   <Button 
                     variant="default" 
                     size="sm" 
@@ -3283,7 +3628,75 @@ onUnmounted(() => {
 
                     <!-- Right Column: Detail Form -->
                     <div class="flex flex-col gap-4 border-l border-white/5 pl-4 overflow-y-auto custom-scrollbar">
-                      <div class="flex items-start justify-between gap-4 pb-3 border-b border-primary/5">
+                      <div class="flex flex-col gap-2 pb-3 border-b border-primary/5">
+                        <div class="flex items-center justify-between gap-2 shrink-0">
+                          <span v-if="selectedProfile" class="text-[9px] font-bold text-muted-foreground opacity-30 font-mono tracking-tighter mt-0.5 ml-0.5">ID: {{ selectedProfile.id }}</span>
+                          <div v-else></div>
+
+                          <div v-if="selectedProfile" class="flex items-center gap-2 shrink-0">
+                            <div class="flex items-center bg-muted/40 border border-border/50 rounded-lg p-0.5 shadow-xs mr-1">
+                              <Button 
+                                v-if="syncService"
+                                variant="ghost" 
+                                size="icon" 
+                                class="h-7 w-7 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all"
+                                title="View History"
+                                @click="showHistoryDialog = true"
+                              >
+                                <History class="size-3.5" />
+                              </Button>
+
+                              <div v-if="syncService && backlogIssueUrl" class="h-3 w-px bg-border/50 mx-0.5"></div>
+
+                              <Button 
+                                v-if="backlogIssueUrl"
+                                variant="ghost" 
+                                size="icon" 
+                                class="h-7 w-7 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all"
+                                title="View on Backlog"
+                                @click="() => { if (backlogIssueUrl) openUrl(backlogIssueUrl); }"
+                              >
+                                <ExternalLink class="size-3.5" />
+                              </Button>
+
+                              <div v-if="backlogIssueUrl || syncService" class="h-3 w-px bg-border/50 mx-0.5"></div>
+
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                class="h-7 w-7 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all"
+                                title="Export Documentation"
+                                @click="exportProfileToDoc"
+                              >
+                                <FileDown class="size-3.5" />
+                              </Button>
+                            </div>
+
+                            <Button 
+                              variant="outline" 
+                              size="sm" 
+                              class="flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-primary hover:text-primary bg-primary/5 hover:bg-primary/10 transition-all border-primary/20 font-bold tracking-widest text-[10px] shadow-xs uppercase shrink-0"
+                              title="Clone to your account"
+                              :disabled="runner.running"
+                              @click="cloneSelectedSetupProfile"
+                            >
+                              <FilePlus2 class="size-3.5 opacity-80" /> CLONE
+                            </Button>
+                            
+                            <Button 
+                              v-if="canEditSelected"
+                              variant="outline" 
+                              size="sm" 
+                              class="flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-destructive hover:text-destructive-foreground bg-destructive/5 hover:bg-destructive/10 transition-all border-destructive/20 font-bold tracking-widest text-[10px] shadow-xs uppercase shrink-0"
+                              title="Delete this Profile"
+                              :disabled="runner.running"
+                              @click="deleteSelectedSetupProfile"
+                            >
+                              <Trash2 class="size-3.5 opacity-80" /> DELETE
+                            </Button>
+                          </div>
+                        </div>
+
                         <div class="min-w-0 flex-1 relative">
                           <template v-if="selectedProfile">
                             <div ref="issueSearchContainerRef" class="relative group/identity flex flex-col pt-1 animate-in fade-in slide-in-from-top-2 duration-300">
@@ -3310,8 +3723,6 @@ onUnmounted(() => {
                                   </div>
                                 </div>
                               </div>
-                              <span class="text-[9px] font-bold text-muted-foreground opacity-30 font-mono tracking-tighter mt-0.5 ml-0.5">ID: {{ selectedProfile.id }}</span>
-
                               <!-- Unified Search Dropdown under Title -->
                               <div v-if="showIssueSearch && backlog.profile" 
                                    class="absolute top-12 left-0 w-full z-50 bg-card/95 backdrop-blur-xl border border-primary/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 origin-top">
@@ -3343,50 +3754,6 @@ onUnmounted(() => {
                           <template v-else>
                             <h2 class="text-xl font-black tracking-tight text-muted-foreground/40 mt-1">Select a Profile</h2>
                           </template>
-                        </div>
-                        <div class="flex items-center gap-2 pt-1.5 shrink-0">
-                          <Button 
-                            v-if="syncService"
-                            variant="ghost" 
-                            size="icon" 
-                            class="h-8 w-8 rounded-lg hover:bg-primary/10 text-primary transition-all opacity-60 hover:opacity-100"
-                            title="View History"
-                            @click="showHistoryDialog = true"
-                          >
-                            <History class="size-4" />
-                          </Button>
-
-                          <Button 
-                            v-if="backlogIssueUrl"
-                            variant="ghost" 
-                            size="icon" 
-                            class="h-8 w-8 rounded-lg hover:bg-primary/10 text-primary transition-all opacity-60 hover:opacity-100"
-                            title="View on Backlog"
-                            @click="() => { if (backlogIssueUrl) openUrl(backlogIssueUrl); }"
-                          >
-                            <ExternalLink class="size-4" />
-                          </Button>
-
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            class="h-8 w-8 rounded-lg hover:bg-primary/10 text-primary transition-all opacity-60 hover:opacity-100"
-                            title="Export Documentation"
-                            @click="exportProfileToDoc"
-                          >
-                            <FileDown class="size-4" />
-                          </Button>
-                          
-                          <Button 
-                            variant="outline" 
-                            size="sm" 
-                            class="flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-destructive hover:text-destructive-foreground hover:bg-destructive/20 transition-all border border-destructive/20 font-black tracking-widest text-[9px] shadow-sm uppercase shrink-0"
-                            title="Delete this Profile"
-                            :disabled="runner.running"
-                            @click="deleteSelectedSetupProfile"
-                          >
-                            <Trash2 class="size-3.5 opacity-80" /> DELETE
-                          </Button>
                         </div>
                       </div>
 
@@ -3524,12 +3891,23 @@ onUnmounted(() => {
                           </div>
 
                           <div v-if="!runner.isExeTestMode" class="space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-300">
-                            <div class="flex gap-1.5 h-9">
-                              <div class="flex-1 relative flex items-center">
-                                <Input v-model="runner.batFilePath" placeholder="Path to .bat file" class="font-mono pr-8 h-full text-[11px]" />
-                                <Beaker class="absolute right-2.5 size-3 opacity-30" />
+                            <div class="flex flex-col gap-1.5">
+                              <div v-for="(_bat, idx) in runner.batFiles" :key="idx" class="flex gap-1.5 h-9" @click="runner.activeBatConfigIndex = idx + 1" :class="runner.activeBatConfigIndex === idx + 1 ? 'ring-1 ring-blue-500 rounded-md' : ''">
+                                <div class="flex-1 relative flex items-center">
+                                  <Input v-model="runner.batFiles[idx]" @update:model-value="(v: any) => { const currentId = runner.batFilesActiveArgIds?.[idx] || ''; const s = runner.runArgSnippets.find(x => x.id === currentId); if(s) s.batPath = v; }" placeholder="Path to .bat file (Additional)" class="font-mono pr-8 h-full text-[11px] border-blue-500/30 bg-blue-500/5 cursor-pointer" />
+                                  <Beaker class="absolute right-2.5 size-3 opacity-30 text-blue-500" />
+                                </div>
+                                <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile(idx)" title="Browse .bat file"><FolderOpen class="size-4" /></Button>
+                                <Button variant="ghost" size="icon" class="h-full w-9 border-input shrink-0 text-destructive/80 hover:text-destructive hover:bg-destructive/10" @click.stop="removeBatConfig(idx)" title="Remove"><Trash2 class="size-4" /></Button>
                               </div>
-                              <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="browseBatFile"><FolderOpen class="size-4" /></Button>
+                              <div class="flex gap-1.5 h-9" @click="runner.activeBatConfigIndex = 0" :class="runner.activeBatConfigIndex === 0 ? 'ring-1 ring-blue-500 rounded-md' : ''">
+                                <div class="flex-1 relative flex items-center">
+                                  <Input v-model="runner.batFilePath" @update:model-value="(v: any) => { const s = runner.runArgSnippets.find(x => x.id === currentBatArgId); if(s) s.batPath = v; const s2 = runner.exeArgSnippets.find(x => x.id === runner.activeExeArgId); if(s2) s2.batPath = v; }" placeholder="Path to .bat file (Main)" class="font-mono pr-8 h-full text-[11px] cursor-pointer" />
+                                  <Beaker class="absolute right-2.5 size-3 opacity-30" />
+                                </div>
+                                <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0" @click="() => browseBatFile()" title="Browse .bat file"><FolderOpen class="size-4" /></Button>
+                                <Button variant="outline" size="icon" class="h-full w-9 border-input shrink-0 text-blue-500 hover:text-blue-600 hover:bg-blue-500/10" @click.stop="() => { if(!runner.batFiles) runner.batFiles = []; runner.batFiles.push(''); }" title="Add another .bat file to run together"><Plus class="size-4" /></Button>
+                              </div>
                             </div>
                             <div class="flex items-center justify-end pr-1 mt-1.5">
                               <label class="flex items-center gap-1.5 cursor-pointer group select-none">
@@ -3552,27 +3930,81 @@ onUnmounted(() => {
                                 <span class="text-[8px] opacity-40 normal-case font-normal leading-none">{{ runner.isExeTestMode ? '(passed to .exe during TEST)' : '(passed to .bat during TEST)' }}</span>
                               </Label>
                               
-                              <div v-if="!runner.isExeTestMode" class="relative flex items-center group/args animate-in fade-in slide-in-from-right-2 duration-300">
-                                <Input ref="argsInputRefBat" v-model="runner.runArgs" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
-                                <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder">
-                                    <Clock class="size-3" />
-                                  </Button>
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder">
-                                    <Monitor class="size-3" />
-                                  </Button>
+                              <div v-if="!runner.isExeTestMode" class="relative flex flex-col group/args animate-in fade-in slide-in-from-right-2 duration-300">
+                                <div class="flex items-center gap-2 mb-2 w-full">
+                                  <Select v-model="currentBatArgId" @update:model-value="(v: any) => onArgSnippetSelected('bat', v)" :disabled="currentBatArgSnippets.length === 0">
+                                    <SelectTrigger class="h-7 text-xs font-mono bg-muted/50 border-primary/20 hover:border-primary/40 focus:ring-primary/20 transition-colors w-full flex-1">
+                                      <SelectValue placeholder="Select Argument" class="truncate" />
+                                    </SelectTrigger>
+                                    <SelectContent class="bg-background/95 backdrop-blur-xl border-primary/20">
+                                      <div v-for="snippet in currentBatArgSnippets" :key="snippet.id" class="flex items-center pl-2 pr-1 gap-2 hover:bg-muted/50">
+                                        <SelectItem :value="snippet.id" class="text-[10px] font-medium py-2 flex-1 cursor-pointer">
+                                          {{ snippet.name }}
+                                        </SelectItem>
+                                      </div>
+                                    </SelectContent>
+                                  </Select>
+                                  <div class="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="startNamingArgSnippet('create', 'bat')" title="New Argument">
+                                      <Plus class="size-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="startNamingArgSnippet('rename', 'bat')" :disabled="currentBatArgSnippets.length === 0" title="Rename">
+                                      <Pencil class="size-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-destructive hover:text-destructive-foreground text-destructive/80" @click="deleteActiveArgSnippet('bat')" :disabled="currentBatArgSnippets.length === 0" title="Delete">
+                                      <Trash2 class="size-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div class="relative flex items-center group/args w-full">
+                                  <Input ref="argsInputRefBat" v-model="currentBatArgs" @update:model-value="(v: any) => { const s = runner.runArgSnippets.find(x => x.id === currentBatArgId); if(s) s.content = v; }" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
+                                  <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder">
+                                      <Clock class="size-3" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder">
+                                      <Monitor class="size-3" />
+                                    </Button>
+                                  </div>
                                 </div>
                               </div>
                               
-                              <div v-else class="relative flex items-center group/args animate-in fade-in slide-in-from-right-2 duration-300">
-                                <Input ref="argsInputRefExe" v-model="runner.exeArgs" placeholder="1 2 3 4 5 ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
-                                <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder">
-                                    <Clock class="size-3" />
-                                  </Button>
-                                  <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder">
-                                    <Monitor class="size-3" />
-                                  </Button>
+                              <div v-else class="relative flex flex-col group/args animate-in fade-in slide-in-from-right-2 duration-300">
+                                <div class="flex items-center gap-2 mb-2 w-full">
+                                  <Select v-model="runner.activeExeArgId" @update:model-value="(v: any) => onArgSnippetSelected('exe', v)" :disabled="runner.exeArgSnippets.length === 0">
+                                    <SelectTrigger class="h-7 text-xs font-mono bg-muted/50 border-primary/20 hover:border-primary/40 focus:ring-primary/20 transition-colors w-full flex-1">
+                                      <SelectValue placeholder="Select Argument" class="truncate" />
+                                    </SelectTrigger>
+                                    <SelectContent class="bg-background/95 backdrop-blur-xl border-primary/20">
+                                      <div v-for="snippet in runner.exeArgSnippets" :key="snippet.id" class="flex items-center pl-2 pr-1 gap-2 hover:bg-muted/50">
+                                        <SelectItem :value="snippet.id" class="text-[10px] font-medium py-2 flex-1 cursor-pointer">
+                                          {{ snippet.name }}
+                                        </SelectItem>
+                                      </div>
+                                    </SelectContent>
+                                  </Select>
+                                  <div class="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="startNamingArgSnippet('create', 'exe')" title="New Argument">
+                                      <Plus class="size-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="startNamingArgSnippet('rename', 'exe')" :disabled="runner.exeArgSnippets.length === 0" title="Rename">
+                                      <Pencil class="size-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-destructive hover:text-destructive-foreground text-destructive/80" @click="deleteActiveArgSnippet('exe')" :disabled="runner.exeArgSnippets.length === 0" title="Delete">
+                                      <Trash2 class="size-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div class="relative flex items-center group/args w-full">
+                                  <Input ref="argsInputRefExe" v-model="runner.exeArgs" @update:model-value="(v: any) => { const s = runner.exeArgSnippets.find(x => x.id === runner.activeExeArgId); if(s) s.content = v; }" placeholder="1 2 3 4 5 ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
+                                  <div class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover/args:opacity-100 transition-opacity">
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="insertTimePlaceholder">
+                                      <Clock class="size-3" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="insertHostnamePlaceholder">
+                                      <Monitor class="size-3" />
+                                    </Button>
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -3655,26 +4087,22 @@ onUnmounted(() => {
             </div>
 
             <div class="flex-1 h-full flex flex-col gap-4 min-w-0 pt-2 pr-6 pl-2 pb-0 overflow-hidden">
-              <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl">
+              <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl">
                 <!-- Header with Session Switcher -->
-                <div class="px-3 py-1.5 flex items-center justify-between border-b bg-muted/50">
-                  <div class="flex items-center gap-2">
+                <div class="px-3 py-1 flex items-center justify-between gap-4 border-b bg-muted/50 shrink-0 w-full min-w-0">
+                  <div class="flex items-center gap-3 flex-1 min-w-0 overflow-hidden">
                     <span class="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mr-2">Terminal</span>
                     
-                    <div class="flex items-center gap-1 bg-background/50 p-0.5 rounded-md border shadow-inner" v-if="runner.running || termState.active === 'run'">
-                      <button @click="termState.active = 'main'" 
-                              :class="termState.active === 'main' ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-                              class="px-2.5 py-0.5 rounded-sm text-[10px] font-bold transition-all uppercase tracking-tighter">
-                        1 Shell
-                      </button>
-                      <button @click="termState.active = 'run'" 
-                              :class="termState.active === 'run' ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
-                              class="px-2.5 py-0.5 rounded-sm text-[10px] font-bold transition-all uppercase tracking-tighter">
-                        2 Output
+                    <div class="flex items-center gap-1 bg-background/50 p-1 rounded-md border shadow-inner flex-nowrap overflow-x-auto flex-1 min-w-0 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" v-if="termState.terminals && termState.terminals.length > 1">
+                      <button v-for="(tId, idx) in (termState.terminals || [])" :key="tId"
+                              @click="termState.active = tId" 
+                              :class="termState.active === tId ? 'bg-zinc-800 text-white shadow-sm ring-1 ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
+                              class="px-2.5 py-0.5 rounded-sm text-[10px] font-bold transition-all uppercase tracking-tighter max-w-[150px] truncate shrink-0 whitespace-nowrap" :title="termState[tId]?.name || tId">
+                        {{ idx + 1 }} {{ tId === 'main' ? 'Shell' : (termState[tId]?.name || 'Run ' + idx) }}
                       </button>
                     </div>
                   </div>
-                  <div class="flex items-center gap-2">
+                  <div class="flex items-center gap-2 shrink-0">
                     <div class="flex items-center gap-1 border-l ml-1 pl-1">
                       <Button variant="ghost" size="sm" class="h-6 w-6 p-0 text-muted-foreground hover:text-primary transition-colors" title="Jump to Project Root" @click="cdToRoot">
                         <Home class="size-3" />
@@ -3684,12 +4112,12 @@ onUnmounted(() => {
                   </div>
                 </div>
 
-                <div class="flex-1 flex flex-row min-h-0 bg-card relative">
+                <div class="flex-1 flex flex-row min-h-0 min-w-0 bg-card relative">
                   <!-- Main Shell Viewport -->
                   <div v-show="termState.active === 'main'" ref="mainTermRef" class="flex-1 terminal-custom-scroll"></div>
                   
                   <!-- Run Output Viewport -->
-                  <div v-show="termState.active === 'run'" ref="runTermRef" class="flex-1 terminal-custom-scroll"></div>
+                  <div v-for="tId in (termState.terminals || []).filter((t: any) => t !== 'main')" :key="tId" v-show="termState.active === tId" :id="'term-' + tId" class="flex-1 terminal-custom-scroll"></div>
                     <!-- Premium Vertical Execution Sidebar -->
                   <div class="w-14 border-l bg-muted/40 flex flex-col shrink-0 overflow-y-auto scrollbar-none">
                     <TooltipProvider>
@@ -3999,52 +4427,30 @@ onUnmounted(() => {
       </DialogContent>
     </Dialog>
   </div>
+
+  <!-- Naming Argument Snippet Dialog -->
+  <Dialog :open="isNamingArgSnippet" @update:open="v => { if(!v) isNamingArgSnippet = false; }">
+    <DialogContent class="sm:max-w-[425px] rounded-3xl border border-primary/10 shadow-2xl bg-card/95 backdrop-blur-xl">
+      <DialogHeader>
+        <DialogTitle class="flex items-center gap-2 text-primary">
+          <TerminalSquare class="h-5 w-5" />
+          {{ namingArgSnippetTitle }}
+        </DialogTitle>
+      </DialogHeader>
+      <div class="grid gap-4 py-4 mt-2">
+        <div class="flex flex-col gap-2">
+          <Label class="text-xs font-bold uppercase tracking-wider text-muted-foreground ml-1">Argument Name</Label>
+          <Input v-model="namingArgSnippetValue" placeholder="e.g. Test Scenario A" class="h-10 rounded-xl bg-black/5 dark:bg-white/5 border-transparent focus-visible:ring-primary/30" @keydown.enter="commitArgSnippetName" />
+        </div>
+      </div>
+      <div class="flex items-center justify-end gap-3 mt-2">
+        <Button variant="ghost" class="h-10 px-6 rounded-xl text-[11px] font-black uppercase tracking-widest opacity-60 hover:opacity-100" @click="isNamingArgSnippet = false">
+          Cancel
+        </Button>
+        <Button class="h-11 px-8 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-xl shadow-primary/20 bg-primary hover:bg-primary/90" @click="commitArgSnippetName">
+          Save
+        </Button>
+      </div>
+    </DialogContent>
+  </Dialog>
 </template>
-
-<style>
-.toast-enter-active,
-.toast-leave-active {
-  transition: all 0.5s cubic-bezier(0.19, 1, 0.22, 1);
-}
-.toast-enter-from {
-  opacity: 0;
-  transform: translateY(20px) scale(0.9);
-}
-.toast-leave-to {
-  opacity: 0;
-  transform: translateX(50px) scale(0.9);
-}
-</style>
-
-<style>
-.terminal-custom-scroll .xterm-viewport::-webkit-scrollbar {
-  width: 8px;
-}
-.terminal-custom-scroll .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-.terminal-custom-scroll .xterm-viewport::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-}
-.terminal-custom-scroll .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
-}
-.xterm-screen {
-  padding: 8px;
-}
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 10px;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--muted-foreground);
-  opacity: 0.5;
-}
-</style>
