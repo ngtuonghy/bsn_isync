@@ -206,6 +206,8 @@ type ProjectProfile = {
   isExeTestMode?: boolean;
   forceUnicode?: boolean;
   autoWatchBat?: boolean;
+  autoWatchTargetTest?: boolean;
+  autoWatchTargetRun?: boolean;
   sqlSetupPath: string;
   sqlServer?: string;
   sqlDatabase?: string;
@@ -1108,6 +1110,8 @@ const runner = reactive({
   isExeTestMode: false,
   forceUnicode: true,
   autoWatchBat: true,
+  autoWatchTargetTest: false,
+  autoWatchTargetRun: false,
   sqlSetupPath: "",
   sqlServer: localStorage.getItem("bsn_isync:global_sql_server") || "",
   sqlDatabase: localStorage.getItem("bsn_isync:global_sql_db") || "Arkbell_01",
@@ -1234,6 +1238,49 @@ async function checkSqlConnection(manual = false) {
 
 
 let unwatchBatFile: any;
+let unwatchTargetDir: any;
+
+async function setupTargetWatcher() {
+  if (unwatchTargetDir) {
+    unwatchTargetDir();
+    unwatchTargetDir = undefined;
+  }
+  
+  if (!runner.autoWatchTargetTest && !runner.autoWatchTargetRun) return;
+  if (!runner.startupProject) return;
+
+  const targetDir = runner.startupProject.replace(/[\\/][^\\/]+$/, '');
+  if (!targetDir) return;
+
+  try {
+    // @ts-ignore
+    unwatchTargetDir = await fsWatch(targetDir, (event: any) => {
+      const typeStr = JSON.stringify(event.type);
+      if (typeStr.includes('modify') || typeStr.includes('any')) {
+        const paths = event.paths || [];
+        const isCodeChange = paths.some((p: string) => p.endsWith('.cs') || p.endsWith('.csproj') || p.endsWith('.json') || p.endsWith('.config'));
+        
+        if (isCodeChange) {
+          if (runner.autoWatchTargetTest && !runner.loadingTarget && !runner.buildStatus) {
+            toast.info("Target code changed, auto-running test...");
+            sendNotification({ title: 'BSN iSync', body: 'Target code changed. Auto-running test...' });
+            dotnet('run', 'bat');
+          } else if (runner.autoWatchTargetRun && runner.running && !runner.loadingTarget && !runner.buildStatus) {
+            toast.info("Target code changed, auto-restarting app...");
+            sendNotification({ title: 'BSN iSync', body: 'Target code changed. Auto-restarting app...' });
+            stop().then(() => {
+              setTimeout(() => {
+                dotnet('run', 'exe');
+              }, 1000);
+            });
+          }
+        }
+      }
+    }, { delayMs: 1000 });
+  } catch (e) {
+    console.error("Failed to watch target dir", e);
+  }
+}
 
 async function setupBatWatcher() {
   if (unwatchBatFile) {
@@ -1241,19 +1288,28 @@ async function setupBatWatcher() {
     unwatchBatFile = undefined;
   }
   
-  if (!runner.autoWatchBat) return;
+  if (!runner.autoWatchTargetTest && !runner.autoWatchTargetRun) return;
   
   const filesToWatch = [runner.batFilePath, ...(runner.batFiles || [])].filter(b => b && b.trim());
   if (filesToWatch.length === 0) return;
 
   try {
-    unwatchBatFile = await fsWatch(filesToWatch, (event) => {
+    // @ts-ignore
+    unwatchBatFile = await fsWatch(filesToWatch, (event: any) => {
       const typeStr = JSON.stringify(event.type);
       if (typeStr.includes('modify') || typeStr.includes('any')) {
-        if (!runner.loadingTarget && !runner.buildStatus) {
+        if (runner.autoWatchTargetTest && !runner.loadingTarget && !runner.buildStatus) {
           toast.info("BAT file changed, auto-running test...");
           sendNotification({ title: 'BSN iSync', body: 'BAT file changed. Auto-running test...' });
           dotnet('run', 'bat');
+        } else if (runner.autoWatchTargetRun && runner.running && !runner.loadingTarget && !runner.buildStatus) {
+          toast.info("BAT file changed, auto-restarting app...");
+          sendNotification({ title: 'BSN iSync', body: 'BAT file changed. Auto-restarting app...' });
+          stop().then(() => {
+            setTimeout(() => {
+              dotnet('run', 'exe');
+            }, 1000);
+          });
         }
       }
     }, { delayMs: 500 });
@@ -1262,8 +1318,12 @@ async function setupBatWatcher() {
   }
 }
 
-watch(() => [runner.autoWatchBat, runner.batFilePath, runner.batFiles], () => {
+watch(() => [runner.autoWatchTargetTest, runner.autoWatchTargetRun, runner.batFilePath, runner.batFiles], () => {
   setupBatWatcher();
+}, { deep: true });
+
+watch(() => [runner.autoWatchTargetTest, runner.autoWatchTargetRun, runner.startupProject], () => {
+  setupTargetWatcher();
 }, { deep: true });
 
 // Watch for SQL context changes to auto-test
@@ -1292,7 +1352,7 @@ onClickOutside(hotkeyContainerRef, () => {
 // --- Autosave logic ---
 watch(() => {
   const { 
-    running, loadingTarget, logs, childPid, buildStatus, isExeTestMode, forceUnicode, autoWatchBat,
+    running, loadingTarget, logs, childPid, buildStatus, isExeTestMode, forceUnicode, autoWatchBat, autoWatchTargetTest, autoWatchTargetRun,
     // Exclude SQL settings from profile persistence
     sqlServer, sqlDatabase, sqlUser, sqlPassword, useWindowsAuth,
     ...rest 
@@ -1580,6 +1640,8 @@ function buildSetupFromRunner(name: string): ProjectProfile {
     isExeTestMode: runner.isExeTestMode,
     forceUnicode: runner.forceUnicode,
     autoWatchBat: runner.autoWatchBat,
+    autoWatchTargetTest: runner.autoWatchTargetTest,
+    autoWatchTargetRun: runner.autoWatchTargetRun,
     sqlSetupPath: runner.sqlSetupPath,
     sqlServer: runner.sqlServer,
     sqlDatabase: runner.sqlDatabase,
@@ -1635,6 +1697,8 @@ function applySetupToRunner(setup: ProjectProfile) {
   runner.isExeTestMode = setup.isExeTestMode || false;
   runner.forceUnicode = setup.forceUnicode ?? true;
   runner.autoWatchBat = setup.autoWatchBat ?? true;
+  runner.autoWatchTargetTest = setup.autoWatchTargetTest ?? false;
+  runner.autoWatchTargetRun = setup.autoWatchTargetRun ?? false;
   runner.deployPath = toAbs(setup.deployPath || "");
   
   runner.sqlSetupPath = setup.sqlSetupPath || "";
@@ -1810,12 +1874,12 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
           const idx = setupProfiles.value.findIndex(p => p.id === targetId);
           if (idx !== -1) {
             const current = setupProfiles.value[idx];
-            setupProfiles.value[idx] = { ...content, version: serverVersion, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true, autoWatchBat: current.autoWatchBat };
+            setupProfiles.value[idx] = { ...content, version: serverVersion, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true, autoWatchBat: current.autoWatchBat, autoWatchTargetTest: current.autoWatchTargetTest, autoWatchTargetRun: current.autoWatchTargetRun };
           } else {
-            setupProfiles.value.push({ ...content, version: serverVersion, forceUnicode: true, autoWatchBat: true });
+            setupProfiles.value.push({ ...content, version: serverVersion, forceUnicode: true, autoWatchBat: true, autoWatchTargetTest: false, autoWatchTargetRun: false });
           }
           // Update hash to avoid immediate re-push
-          const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, ...hashable } = content;
+          const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, autoWatchTargetTest, autoWatchTargetRun, ...hashable } = content;
           profileHashes.set(targetId!, JSON.stringify(hashable));
           profilesChanged = true;
           if (targetId === selectedSetupId.value) currentProfilePulled = true;
@@ -1852,9 +1916,9 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
             setupProfiles.value.push({ ...content, version: cp.version, forceUnicode: true });
           } else {
             const current = setupProfiles.value[idx];
-            setupProfiles.value[idx] = { ...content, version: cp.version, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true, autoWatchBat: current.autoWatchBat };
+            setupProfiles.value[idx] = { ...content, version: cp.version, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true, autoWatchBat: current.autoWatchBat, autoWatchTargetTest: current.autoWatchTargetTest, autoWatchTargetRun: current.autoWatchTargetRun };
           }
-          const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, ...hashable } = content;
+          const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, autoWatchTargetTest, autoWatchTargetRun, ...hashable } = content;
           profileHashes.set(cp.id, JSON.stringify(hashable));
           profilesChanged = true;
           if (cp.id === selectedSetupId.value) currentProfilePulled = true;
@@ -1897,7 +1961,7 @@ async function syncProfilesWithCloudflare(targetId?: string, skipPush = false, m
       const pushProfile = async (p: ProjectProfile) => {
         if (p.owner !== currentUser.value) return;
 
-        const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, ...hashable } = p;
+        const { updatedAt, version, isExeTestMode, forceUnicode, autoWatchBat, autoWatchTargetTest, autoWatchTargetRun, ...hashable } = p;
         const currentContentStr = JSON.stringify(hashable);
         const lastHash = profileHashes.get(p.id);
         if (lastHash === currentContentStr) return;
@@ -2064,6 +2128,8 @@ function saveCurrentToSelectedSetupProfile() {
   setup.isExeTestMode = runner.isExeTestMode;
   setup.forceUnicode = runner.forceUnicode;
   setup.autoWatchBat = runner.autoWatchBat;
+  setup.autoWatchTargetTest = runner.autoWatchTargetTest;
+  setup.autoWatchTargetRun = runner.autoWatchTargetRun;
   setup.sqlSetupPath = runner.sqlSetupPath;
   // Deliberately omitted sqlServer to prevent syncing local workstation host configs to cloud
   setup.sqlDatabase = runner.sqlDatabase;
@@ -2153,6 +2219,8 @@ function createNewSetupProfile() {
   runner.isExeTestMode = false;
   runner.forceUnicode = true;
   runner.autoWatchBat = true;
+  runner.autoWatchTargetTest = false;
+  runner.autoWatchTargetRun = false;
   selectedProjectRoot.value = "";
   
   // Clear Backlog issue links for a fresh start
@@ -3360,6 +3428,17 @@ onUnmounted(() => {
             </Button>
           </template>
 
+
+          <div class="flex items-center gap-2 mr-2 border-r border-border pr-2">
+            <label class="flex items-center gap-1.5 text-[10px] font-bold cursor-pointer hover:text-primary transition-colors text-muted-foreground">
+              <input type="checkbox" v-model="runner.autoWatchTargetTest" class="rounded border-input text-primary focus:ring-primary size-3 bg-transparent" />
+              <span>Watch Test</span>
+            </label>
+            <label class="flex items-center gap-1.5 text-[10px] font-bold cursor-pointer hover:text-primary transition-colors text-muted-foreground">
+              <input type="checkbox" v-model="runner.autoWatchTargetRun" class="rounded border-input text-primary focus:ring-primary size-3 bg-transparent" />
+              <span>Watch Run</span>
+            </label>
+          </div>
 
           <Button @click="toggleTheme" variant="ghost" size="icon" class="h-7 w-7 transition-all hover:bg-accent ring-primary/20">
             <Moon v-if="!dark" class="size-4" />
