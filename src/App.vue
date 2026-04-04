@@ -4321,11 +4321,15 @@ onUnmounted(() => {
                           <div v-if="!runner.isExeTestMode" class="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
                             <div class="flex flex-col gap-2">
                               <div class="flex items-center gap-1.5 p-1 rounded-xl border bg-card shadow-sm transition-all duration-200 group relative cursor-pointer" @click="runner.activeBatConfigIndex = 0" :class="runner.activeBatConfigIndex === 0 ? 'ring-1 ring-primary/50 border-primary/30 shadow-primary/5 bg-primary/5' : 'border-border/50 hover:border-border'">
-                                <div class="flex-1 relative flex items-center h-8">
+                                <div class="flex-1 relative flex items-center h-8 pl-[34px] pr-2 overflow-hidden" :title="runner.batFilePath">
                                   <div class="absolute left-2 flex items-center justify-center size-5 rounded-md bg-primary/10 text-primary border border-primary/20 shadow-sm">
                                     <span class="text-[9px] font-black">1</span>
                                   </div>
-                                  <Input v-model="runner.batFilePath" @update:model-value="(v: any) => { const s = runner.runArgSnippets.find(x => x.id === currentBatArgId); if(s) s.batPath = v; const s2 = runner.exeArgSnippets.find(x => x.id === runner.activeExeArgId); if(s2) s2.batPath = v; }" placeholder=".bat file" class="font-mono pl-[34px] pr-8 h-full text-[10.5px] border-0 bg-transparent focus-visible:ring-0 shadow-none cursor-pointer truncate pointer-events-none" />
+                                  <div v-if="runner.batFilePath" class="flex items-center truncate text-xs font-mono w-full cursor-pointer pointer-events-none">
+                                    <span class="truncate text-muted-foreground min-w-0">{{ runner.batFilePath.replace(/[^/\\]+$/, '') }}</span>
+                                    <span class="font-bold text-primary shrink-0">{{ runner.batFilePath.match(/[^/\\]+$/)?.[0] || runner.batFilePath }}</span>
+                                  </div>
+                                  <div v-else class="text-xs font-mono text-muted-foreground/50 cursor-pointer pointer-events-none">.bat file</div>
                                 </div>
                                 <div class="flex items-center gap-0.5 pr-1 shrink-0 transition-opacity">
                                   <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background hover:text-foreground shadow-sm border border-transparent hover:border-border/50 transition-all" @click.stop="() => browseBatFile()" title="Browse"><FolderOpen class="size-3.5" /></Button>
@@ -4333,11 +4337,15 @@ onUnmounted(() => {
                                 </div>
                               </div>
                               <div v-for="(_bat, idx) in runner.batFiles" :key="idx" class="flex items-center gap-1.5 p-1 rounded-xl border bg-card shadow-sm transition-all duration-200 group relative cursor-pointer" @click="runner.activeBatConfigIndex = idx + 1" :class="runner.activeBatConfigIndex === idx + 1 ? 'ring-1 ring-primary/50 border-primary/30 shadow-primary/5 bg-primary/5' : 'border-border/50 hover:border-border'">
-                                <div class="flex-1 relative flex items-center h-8">
+                                <div class="flex-1 relative flex items-center h-8 pl-[34px] pr-2 overflow-hidden" :title="runner.batFiles[idx]">
                                   <div class="absolute left-2 flex items-center justify-center size-5 rounded-md bg-primary/10 text-primary border border-primary/20 shadow-sm">
                                     <span class="text-[9px] font-black">{{ idx + 2 }}</span>
                                   </div>
-                                  <Input v-model="runner.batFiles[idx]" @update:model-value="(v: any) => { const currentId = runner.batFilesActiveArgIds?.[idx] || ''; const s = runner.runArgSnippets.find(x => x.id === currentId); if(s) s.batPath = v; }" placeholder=".bat file" class="font-mono pl-[34px] pr-8 h-full text-[10.5px] border-0 bg-transparent focus-visible:ring-0 shadow-none cursor-pointer truncate pointer-events-none" />
+                                  <div v-if="runner.batFiles[idx]" class="flex items-center truncate text-xs font-mono w-full cursor-pointer pointer-events-none">
+                                    <span class="truncate text-muted-foreground min-w-0">{{ runner.batFiles[idx].replace(/[^/\\]+$/, '') }}</span>
+                                    <span class="font-bold text-primary shrink-0">{{ runner.batFiles[idx].match(/[^/\\]+$/)?.[0] || runner.batFiles[idx] }}</span>
+                                  </div>
+                                  <div v-else class="text-xs font-mono text-muted-foreground/50 cursor-pointer pointer-events-none">.bat file</div>
                                 </div>
                                 <div class="flex items-center gap-0.5 pr-1 shrink-0 transition-opacity">
                                   <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background hover:text-foreground shadow-sm border border-transparent hover:border-border/50 transition-all" @click.stop="browseBatFile(idx)" title="Browse"><FolderOpen class="size-3.5" /></Button>
