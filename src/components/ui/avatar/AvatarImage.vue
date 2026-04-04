@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AvatarImage, type AvatarImageProps } from 'reka-ui'
-import { cn } from '@/lib/utils'
+import { cn } from '@/utils/cn'
 
 const props = defineProps<AvatarImageProps & { class?: string }>()
 </script>

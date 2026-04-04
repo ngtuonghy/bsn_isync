@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
-import type { BacklogProfile, BacklogProject } from "@/lib/backlogAuth";
+import type { BacklogProfile, BacklogProject } from "@/utils/backlogAuth";
 
 defineProps<{
   host: string;

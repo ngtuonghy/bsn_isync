@@ -22,9 +22,9 @@ import {
   type BacklogIssueType,
   type BacklogIssue,
   type BacklogOAuthToken,
-} from "@/lib/backlogAuth";
+} from "@/utils/backlogAuth";
 import { useStore } from "@/composables/useStore";
-import { SyncService } from "@/lib/sync";
+import { SyncService } from "@/utils/sync";
 import "@/index.css";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
