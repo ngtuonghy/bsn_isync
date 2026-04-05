@@ -26,7 +26,8 @@ const actions = [
   { id: 'stop', label: 'Stop Execution', icon: Square, color: 'text-red-500' },
 ];
 
-function handleResetAction(actionId: string) {
+/** Reset a single shortcut to its factory default value. */
+function handleResetShortcut(actionId: string) {
   const defaults: Record<string, string> = {
     test: 'Alt+Shift+T',
     run: 'Alt+Shift+R',
@@ -37,7 +38,8 @@ function handleResetAction(actionId: string) {
   emit('update:shortcut', actionId, defaults[actionId]);
 }
 
-function handleClearAction(actionId: string) {
+/** Clear (unassign) a shortcut for the given action. */
+function handleClearShortcut(actionId: string) {
   emit('update:shortcut', actionId, '');
 }
 </script>
@@ -105,11 +107,11 @@ function handleClearAction(actionId: string) {
               <Pencil class="size-3.5" />
             </Button>
             <Button variant="ghost" size="icon" class="h-8 w-8 rounded-lg text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-all"
-                    @click="handleResetAction(action.id)" title="Reset to default">
+                    @click="handleResetShortcut(action.id)" title="Reset to default">
               <RotateCw class="size-3.5" />
             </Button>
             <Button variant="ghost" size="icon" class="h-8 w-8 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
-                    @click="handleClearAction(action.id)" title="Clear shortcut">
+                    @click="handleClearShortcut(action.id)" title="Clear shortcut">
               <Trash2 class="size-3.5" />
             </Button>
           </template>

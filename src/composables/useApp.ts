@@ -93,7 +93,8 @@ export const TERMINAL_THEMES = {
   }
 };
 
-export const dark = ref(false);
+/** Whether the application is currently in dark mode. */
+export const isDarkMode = ref(false);
 
 export const activeTab = ref<"runner" | "sync">("runner");
 
@@ -298,7 +299,7 @@ export const lastSyncTime = ref<number | null>(null);
 
 export const profileHashes = new Map<string, string>();
 
-export const showHistoryDialog = ref(false);
+export const isHistoryDialogOpen = ref(false);
 
 export async function restoreVersion(v: any) {
   if (!selectedProfile.value) return;
@@ -314,7 +315,7 @@ export async function restoreVersion(v: any) {
     applySelectedSetupProfile(true);
     await saveSetupsForCurrentRoot();
     toast.success(`Restored to version ${v.version}`);
-    showHistoryDialog.value = false;
+    isHistoryDialogOpen.value = false;
   }
 }
 
@@ -382,9 +383,9 @@ export async function loadUIState() {
     console.log("[Store] UI State loaded:", state);
     if (state.activeTab) activeTab.value = state.activeTab;
     if (state.dark !== undefined) {
-      dark.value = state.dark;
+      isDarkMode.value = state.dark;
       const el = document.documentElement;
-      if (dark.value) el.classList.add("dark");
+      if (isDarkMode.value) el.classList.add("dark");
       else el.classList.remove("dark");
     }
     if (state.selectedSetupId) selectedSetupId.value = state.selectedSetupId;
@@ -451,7 +452,7 @@ export async function saveUIState() {
     backlog.updatedAt = Date.now();
     const state = {
       activeTab: activeTab.value,
-      dark: dark.value,
+      dark: isDarkMode.value,
       selectedSetupId: selectedSetupId.value,
       selectedOwner: selectedOwner.value,
       profileScope: profileScope.value,
@@ -877,7 +878,7 @@ export const issueSearchQuery = computed({
   set: (val) => { editableProfileName.value = val; }
 });
 
-export const showIssueSearch = ref(false);
+export const isIssueSearchVisible = ref(false);
 
 export const filteredBacklogIssues = computed(() => {
   const q = issueSearchQuery.value.trim().toLowerCase();
@@ -1052,7 +1053,7 @@ export const namingSqlSnippetValue = ref('');
 
 export const namingSqlSnippetTitle = computed(() => namingSqlSnippetMode.value === 'create' ? 'Create New SQL Script' : 'Rename SQL Script');
 
-export const isSqlSnippetFullscreen = ref(false);
+export const isSqlEditorFullscreen = ref(false);
 
 export function startNamingSqlSnippet(mode: 'create' | 'rename') {
   namingSqlSnippetMode.value = mode;
@@ -1389,7 +1390,7 @@ export const isRecordingShortcut = ref(false);
 
 export const recordingAction = ref<string | null>(null);
 
-export const showHotkeySettings = ref(false);
+export const isHotkeySettingsOpen = ref(false);
 
 export const hotkeyContainerRef = ref<HTMLElement | null>(null);
 
@@ -2248,7 +2249,7 @@ export function createNewSetupProfile() {
   runner.backlogIssueStatusColor = "";
   runner.backlogIssueNotFound = false;
   issueSearchQuery.value = "";
-  showIssueSearch.value = false;
+  isIssueSearchVisible.value = false;
   
   const nextNum = (() => {
     const nums = setupProfiles.value
@@ -2419,12 +2420,12 @@ export const sync = reactive({
 });
 
 export function toggleTheme() {
-  dark.value = !dark.value;
+  isDarkMode.value = !isDarkMode.value;
   const el = document.documentElement;
-  if (dark.value) el.classList.add("dark");
+  if (isDarkMode.value) el.classList.add("dark");
   else el.classList.remove("dark");
   
-  const theme = dark.value ? TERMINAL_THEMES.dark : TERMINAL_THEMES.light;
+  const theme = isDarkMode.value ? TERMINAL_THEMES.dark : TERMINAL_THEMES.light;
   termState.terminals.forEach((tId: string) => {
     if (termState[tId]?.term) termState[tId].term.options.theme = theme;
   });
@@ -3096,7 +3097,7 @@ export async function initPty(id: 'main' | 'run', container: HTMLElement) {
   if (termState[id].term) return;
 
   const t = new Terminal({
-    theme: dark.value ? TERMINAL_THEMES.dark : TERMINAL_THEMES.light,
+    theme: isDarkMode.value ? TERMINAL_THEMES.dark : TERMINAL_THEMES.light,
     cursorBlink: true,
     cursorStyle: 'bar',
     fontSize: 13,
@@ -3201,7 +3202,7 @@ export function setupApp() {
   });
 
   onClickOutside(issueSearchContainerRef, () => {
-    showIssueSearch.value = false;
+    isIssueSearchVisible.value = false;
   });
 
   watch(() => runner.forceUnicode, (val) => {
@@ -3238,7 +3239,7 @@ export function setupApp() {
   );
 
   onClickOutside(hotkeyContainerRef, () => {
-    showHotkeySettings.value = false;
+    isHotkeySettingsOpen.value = false;
     if (isRecordingShortcut.value) stopRecordingShortcut();
   });
 
@@ -3307,7 +3308,7 @@ export function setupApp() {
     ensureVisibleSelection();
   }, { deep: true });
 
-  watch([activeTab, dark, selectedSetupId, selectedOwner, profileScope, () => runner.workspaceRoot, () => backlog.host, () => backlog.apiKey, () => backlog.token, () => backlog.profile], () => {
+  watch([activeTab, isDarkMode, selectedSetupId, selectedOwner, profileScope, () => runner.workspaceRoot, () => backlog.host, () => backlog.apiKey, () => backlog.token, () => backlog.profile], () => {
     saveUIState();
   }, { deep: true });
 

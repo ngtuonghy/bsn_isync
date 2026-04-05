@@ -25,7 +25,8 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits(['update:modelValue', 'change']);
 
-const code = computed({
+/** Reactive binding between the modelValue prop and the CodeMirror editor. */
+const editorContent = computed({
   get: () => props.modelValue,
   set: (val) => emit('update:modelValue', val)
 });
@@ -43,7 +44,8 @@ const editorStyle = computed(() => ({
   fontSize: props.fontSize
 }));
 
-function onChange(val: string) {
+/** Forward the editor change event to the parent component. */
+function handleChange(val: string) {
   emit('change', val);
 }
 </script>
@@ -51,7 +53,7 @@ function onChange(val: string) {
 <template>
   <div class="sql-editor-wrapper w-full h-full relative group/cm rounded-xl overflow-hidden border border-primary/20 bg-background transition-all duration-300 shadow-inner" :class="!isDark ? 'bg-white border-border/50' : 'bg-background/50 border-primary/20'">
     <codemirror
-      v-model="code"
+      v-model="editorContent"
       :placeholder="placeholder"
       :style="editorStyle"
       :autofocus="true"
@@ -59,7 +61,7 @@ function onChange(val: string) {
       :tab-size="2"
       :extensions="extensions"
       :disabled="disabled"
-      @change="onChange"
+      @change="handleChange"
       class="h-full font-mono selection:bg-primary/30"
       :class="!isDark ? 'cm-light' : ''"
     />

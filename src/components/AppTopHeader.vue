@@ -21,8 +21,7 @@ import {
   backlog,
   checkEnv,
   checkForUpdates,
-  dark,
-  downloadUpdate,
+  isDarkMode,  downloadUpdate,
   envStatus,
   handleBacklogLogout,
   isNotificationEnabled,
@@ -30,8 +29,7 @@ import {
   isUpdateDownloading,
   isUpdateReady,
   runner,
-  showHotkeySettings,
-  startBacklogOAuthLogin,
+  isHotkeySettingsOpen,  startBacklogOAuthLogin,
   toggleTheme,
   updateVersion,
 } from "@/composables/appBindings";
@@ -154,9 +152,9 @@ import {
           <div class="absolute right-0 top-full mt-2 w-48 bg-card/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl opacity-0 invisible group-hover/sys-settings:opacity-100 group-hover/sys-settings:visible transition-all z-50 p-2 scale-95 group-hover/sys-settings:scale-100 origin-top-right">
             <div class="flex flex-col gap-1">
               <button @click="toggleTheme" class="flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground w-full text-left transition-colors">
-                <Moon v-if="!dark" class="size-3.5" />
+                <Moon v-if="!isDarkMode" class="size-3.5" />
                 <Sun v-else class="size-3.5 text-yellow-500" />
-                <span>Theme ({{ dark ? 'Dark' : 'Light' }})</span>
+                <span>Theme ({{ isDarkMode ? 'Dark' : 'Light' }})</span>
               </button>
               <button @click="isTerminalHistoryEnabled = !isTerminalHistoryEnabled" class="flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground w-full text-left transition-colors">
                 <History class="size-3.5" :class="isTerminalHistoryEnabled ? 'text-primary' : ''" />
@@ -167,7 +165,7 @@ import {
                 <BellOff v-else class="size-3.5" />
                 <span>Notifications: {{ isNotificationEnabled ? 'On' : 'Off' }}</span>
               </button>
-              <button @click="showHotkeySettings = true" class="flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground w-full text-left transition-colors">
+              <button @click="isHotkeySettingsOpen = true" class="flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground w-full text-left transition-colors">
                 <Keyboard class="size-3.5" />
                 <span>Global Hotkeys</span>
               </button>

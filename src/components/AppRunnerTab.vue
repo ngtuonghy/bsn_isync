@@ -71,7 +71,7 @@ applySelectedProject,
   insertTimePlaceholder,
   isFetchingProfile,
   isNamingSqlSnippet,
-  isSqlSnippetFullscreen,
+  isSqlEditorFullscreen,
   issueSearchContainerRef,
   issueSearchQuery,
   lastSyncTime,
@@ -97,8 +97,8 @@ applySelectedProject,
   selectedProfile,
   selectedProjectRoot,
   selectedSetupId,
-  showHistoryDialog,
-  showIssueSearch,
+  isHistoryDialogOpen,
+  isIssueSearchVisible,
   startNamingArgSnippet,
   stop,
   switchTerminal,
@@ -312,7 +312,7 @@ applySelectedProject,
                                 size="icon" 
                                 class="h-7 w-7 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all"
                                 title="View History"
-                                @click="showHistoryDialog = true"
+                                @click="isHistoryDialogOpen = true"
                               >
                                 <History class="size-3.5" />
                               </Button>
@@ -379,8 +379,8 @@ applySelectedProject,
                                     v-model="editableProfileName" 
                                     class="font-black h-10 border-0 bg-transparent focus-visible:ring-0 px-2 -ml-2 transition-all rounded-md text-xl flex-1 min-w-0 cursor-text shadow-none" 
                                     placeholder="Profile name or search issue..."
-                                    @focus="() => { if (!preventAutoSearch) showIssueSearch = true; }"
-                                    @input="showIssueSearch = true"
+                                    @focus="() => { if (!preventAutoSearch) isIssueSearchVisible = true; }"
+                                    @input="isIssueSearchVisible = true"
                                     @blur="commitProfileName"
                                     @keydown.enter="commitProfileName" 
                                   />
@@ -410,11 +410,11 @@ applySelectedProject,
                                 </div>
                               </div>
                               <!-- Unified Search Dropdown under Title -->
-                              <div v-if="showIssueSearch && backlog.profile && !runner.backlogIssueKey" 
+                              <div v-if="isIssueSearchVisible && backlog.profile && !runner.backlogIssueKey" 
                                    class="absolute top-12 left-0 w-full z-50 bg-card/95 backdrop-blur-xl border border-primary/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 origin-top">
                                 <div class="p-2 border-b border-white/5 bg-primary/5 flex items-center justify-between">
                                   <span class="text-[9px] font-bold text-muted-foreground uppercase tracking-widest pl-2">Suggestions from Backlog</span>
-                                  <Button variant="ghost" size="icon" class="h-5 w-5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive" @click="showIssueSearch = false">
+                                  <Button variant="ghost" size="icon" class="h-5 w-5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive" @click="isIssueSearchVisible = false">
                                     <Plus class="size-3 rotate-45" />
                                   </Button> 
                                 </div>
@@ -422,13 +422,13 @@ applySelectedProject,
                                   <div v-if="filteredBacklogIssues.length === 0" class="py-12 text-center flex flex-col items-center">
                                     <Search class="size-8 mx-auto opacity-10 mb-2" />
                                     <p class="text-[10px] uppercase font-bold text-muted-foreground opacity-40 mb-3">No issues found</p>
-                                    <Button v-if="issueSearchQuery.trim()" variant="outline" size="sm" class="h-7 text-[10px] uppercase tracking-widest font-bold bg-primary/10 text-primary border-primary/20 hover:bg-primary/20" @mousedown.prevent="showIssueSearch = false; commitProfileName()">
+                                    <Button v-if="issueSearchQuery.trim()" variant="outline" size="sm" class="h-7 text-[10px] uppercase tracking-widest font-bold bg-primary/10 text-primary border-primary/20 hover:bg-primary/20" @mousedown.prevent="isIssueSearchVisible = false; commitProfileName()">
                                       <Plus class="size-3 mr-1" /> Use "{{ issueSearchQuery.trim() }}"
                                     </Button>
                                   </div>
                                   <button v-for="issue in filteredBacklogIssues.slice(0, 15)" :key="issue.id"
                                           class="w-full flex flex-col items-start p-2.5 rounded-xl transition-all hover:bg-primary/10 group/item text-left"
-                                          @mousedown.prevent="selectBacklogIssue(issue); showIssueSearch = false; profileNameInput?.focus()">
+                                          @mousedown.prevent="selectBacklogIssue(issue); isIssueSearchVisible = false; profileNameInput?.focus()">
                                     <div class="flex flex-col gap-1.5 items-start w-full min-w-0">
                                       <div class="flex items-center gap-2 w-full min-w-0">
                                         <div class="inline-flex max-w-[50%] h-5 px-1.5 rounded-[4px] border border-b-2 text-[10px] font-mono font-bold items-center justify-center uppercase tracking-normal bg-background shadow-xs transition-all active:translate-y-px active:border-b truncate shrink-0" 
@@ -733,7 +733,7 @@ applySelectedProject,
                                 <div class="flex items-center gap-2">
                                   <span class="text-[8px] font-black py-0.5 px-2 rounded bg-primary/10 text-primary uppercase tracking-tighter">Profile-specific scripts</span>
                                   <div class="w-px h-3 bg-white/10"></div>
-                                  <Button variant="ghost" size="sm" class="h-7 px-3.5 text-[9px] font-black tracking-widest text-cyan-500 hover:bg-cyan-500/10 hover:text-cyan-500 transition-all flex items-center gap-2 rounded-lg group/full border border-cyan-500/20 bg-cyan-500/5 shadow-sm" title="Open Fullscreen Editor (Serious Mode)" @click="isSqlSnippetFullscreen = true">
+                                  <Button variant="ghost" size="sm" class="h-7 px-3.5 text-[9px] font-black tracking-widest text-cyan-500 hover:bg-cyan-500/10 hover:text-cyan-500 transition-all flex items-center gap-2 rounded-lg group/full border border-cyan-500/20 bg-cyan-500/5 shadow-sm" title="Open Fullscreen Editor (Serious Mode)" @click="isSqlEditorFullscreen = true">
                                     <Maximize2 class="size-3 group-hover/full:scale-110 transition-transform" />
                                     FULLSCREEN
                                   </Button>

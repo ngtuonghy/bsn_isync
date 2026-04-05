@@ -6,17 +6,18 @@ const props = defineProps<{
   size?: 'xs' | 'sm' | 'md' | 'lg';
 }>();
 
-const keys = computed(() => {
+/** Split the shortcut string into individual key segments for rendering. */
+const keySegments = computed(() => {
   if (!props.shortcut) return [];
   return props.shortcut.split('+').map(k => k.trim());
 });
 </script>
 
 <template>
-  <div v-if="keys.length" 
+  <div v-if="keySegments.length" 
        class="flex items-center select-none shrink-0"
        :class="size === 'lg' ? 'gap-1.5' : size === 'md' ? 'gap-1' : 'gap-0.5'">
-    <template v-for="(key, i) in keys" :key="i">
+    <template v-for="(key, i) in keySegments" :key="i">
       <span v-if="i > 0" 
             class="font-black opacity-20 mx-0.5"
             :class="size === 'lg' ? 'text-[10px]' : size === 'md' ? 'text-[9px]' : 'text-[7.5px]'">+</span>
