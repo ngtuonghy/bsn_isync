@@ -180,10 +180,27 @@ pub fn copy_alias_exe_and_config(
     
     let dst_canon_opt = fs::canonicalize(&dst).ok();
     if Some(src_canon.clone()) != dst_canon_opt {
+        // Clean up any old .bak.* files from previous runs
+        if let Some(parent_dir) = dst.parent() {
+            if let Some(dst_stem) = dst.file_stem().and_then(|s| s.to_str()) {
+                let bak_prefix = format!("{}.bak.", dst_stem);
+                if let Ok(entries) = fs::read_dir(parent_dir) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            if name.starts_with(&bak_prefix) {
+                                let _ = fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if dst.exists() {
             let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
             let temp_name = dst.with_extension(format!("bak.{}", timestamp));
-            let _ = fs::rename(&dst, temp_name);
+            let _ = fs::rename(&dst, &temp_name);
+            // Try to delete immediately (succeeds if exe is no longer running)
+            let _ = fs::remove_file(&temp_name);
         }
         fs::copy(&src_canon, &dst).map_err(|e| format!("Failed to copy exe to alias: {e}"))?;
     }
