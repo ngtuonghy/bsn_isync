@@ -20,14 +20,15 @@ const props = defineProps<{
 
 const emit = defineEmits(['update:open', 'restore']);
 
-const historyList = ref<any[]>([]);
+const versionHistory = ref<any[]>([]);
 const isFetchingHistory = ref(false);
 
-async function fetchHistory() {
+/** Fetch the version history list for the current profile from the sync service. */
+async function fetchVersionHistory() {
   if (!props.profile || !props.syncService) return;
   isFetchingHistory.value = true;
   try {
-    historyList.value = await props.syncService.getHistory(props.profile.id);
+    versionHistory.value = await props.syncService.getHistory(props.profile.id);
   } catch (e) {
     console.error("Failed to fetch history", e);
     toast.error("Failed to fetch history", { description: String(e) });
@@ -36,18 +37,19 @@ async function fetchHistory() {
   }
 }
 
-function handleRestore(v: any) {
+/** Emit the restore event with the selected version entry. */
+function handleRestoreVersion(v: any) {
   emit('restore', v);
 }
 
 onMounted(() => {
-  if (props.open) fetchHistory();
+  if (props.open) fetchVersionHistory();
 });
 
-// Watch open state to refresh history when opened
+// Refresh history whenever the dialog is opened
 import { watch } from 'vue';
-watch(() => props.open, (newVal) => {
-  if (newVal) fetchHistory();
+watch(() => props.open, (isOpen) => {
+  if (isOpen) fetchVersionHistory();
 });
 </script>
 
@@ -73,12 +75,12 @@ watch(() => props.open, (newVal) => {
           <RefreshCw class="size-8 text-primary animate-spin" />
           <p class="text-[10px] font-black uppercase tracking-[0.2em]">Loading History...</p>
         </div>
-        <div v-else-if="historyList.length === 0" class="flex flex-col items-center justify-center h-full gap-4 opacity-30 italic py-20">
+        <div v-else-if="versionHistory.length === 0" class="flex flex-col items-center justify-center h-full gap-4 opacity-30 italic py-20">
           <History class="size-12" />
           <p class="text-[11px] font-bold uppercase tracking-widest">No history found</p>
         </div>
         <div v-else class="space-y-4">
-          <div v-for="v in historyList" :key="v.id" 
+          <div v-for="v in versionHistory" :key="v.id" 
                class="flex items-center justify-between p-4 rounded-2xl bg-card hover:bg-muted/50 border border-transparent hover:border-border transition-all group/v">
             <div class="flex items-center gap-4">
               <div class="flex flex-col items-center justify-center size-10 rounded-xl bg-secondary text-foreground font-bold text-sm shrink-0 shadow-inner group-hover/v:scale-105 transition-transform border border-border/50">
@@ -103,7 +105,7 @@ watch(() => props.open, (newVal) => {
               size="sm" 
               class="h-8 px-4 text-xs font-medium bg-secondary hover:bg-secondary/80 text-foreground transition-all rounded-lg shadow-sm"
               :disabled="!canEdit"
-              @click="handleRestore(v)"
+              @click="handleRestoreVersion(v)"
             >
               RESTORE
             </Button>

@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
-import type { BacklogProfile, BacklogProject } from "@/lib/backlogAuth";
+import type { BacklogProfile, BacklogProject } from "@/utils/backlogAuth";
 
 defineProps<{
   host: string;
@@ -51,13 +51,13 @@ function initials(name: string) {
           <!-- Quick Project Dropdown -->
           <div v-if="projects.length > 0">
              <Select :model-value="selectedProjectKey" @update:model-value="(v) => { if (v) emit('update:selectedProjectKey', String(v)); }">
-               <SelectTrigger class="h-7 bg-primary/10 border-0 text-[10px] font-bold py-0 px-2.5 rounded-full hover:bg-primary/20 transition-all gap-1 text-primary shadow-sm hover:shadow-md active:scale-95 whitespace-nowrap">
-                 <div>
-                   <SelectValue :placeholder="selectedProjectKey || 'Project'">
-                    {{ projects.find(p => p.projectKey === selectedProjectKey)?.projectKey || 'Project' }}
-                   </SelectValue>
-                 </div>
-               </SelectTrigger>
+                <SelectTrigger class="h-7 bg-primary/10 border-0 text-[10px] font-bold py-0 px-2.5 rounded-full hover:bg-primary/20 transition-all gap-1 text-primary shadow-sm hover:shadow-md active:scale-95 whitespace-nowrap">
+                  <div>
+                    <SelectValue :placeholder="'Not selected'">
+                     {{ projects.find(p => p.projectKey === selectedProjectKey)?.projectKey || 'Not selected' }}
+                    </SelectValue>
+                  </div>
+                </SelectTrigger>
                <SelectContent class="p-1">
                  <SelectItem v-for="p in projects" :key="p.id" :value="p.projectKey">
                    <div class="flex flex-col gap-0.5">

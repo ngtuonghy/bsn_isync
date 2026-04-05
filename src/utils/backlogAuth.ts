@@ -322,10 +322,12 @@ export async function fetchBacklogProjects(
       method: "GET",
       headers: { Authorization: `Bearer ${params.accessToken}` },
     });
+    if (res.status === 401) throw new Error('401');
     if (!res.ok) return { status: "error", error: `Lỗi fetch projects (${res.status})` };
     const data = await res.json();
     return { status: "success", projects: data };
   } catch (e: any) {
+    if (e.message === '401') throw e;
     return { status: "error", error: String(e) };
   }
 }
@@ -352,11 +354,13 @@ export async function fetchBacklogIssue(
       method: "GET",
       headers: { Authorization: `Bearer ${params.accessToken}` },
     });
+    if (res.status === 401) throw new Error('401');
     if (!res.ok) return { status: "error", error: `Lỗi fetch issue (${res.status})` };
     const data = await res.json();
     console.log(data);
     return { status: "success", issue: data };
   } catch (e: any) {
+    if (e.message === '401') throw e;
     return { status: "error", error: String(e) };
   }
 }
@@ -373,10 +377,12 @@ export async function fetchBacklogIssueTypes(
       method: "GET",
       headers: { Authorization: `Bearer ${params.accessToken}` },
     });
+    if (res.status === 401) throw new Error('401');
     if (!res.ok) return { status: "error", error: `Lỗi fetch issue types (${res.status})` };
     const data = await res.json();
     return { status: "success", issueTypes: data };
   } catch (e: any) {
+    if (e.message === '401') throw e;
     return { status: "error", error: String(e) };
   }
 }
@@ -424,14 +430,19 @@ export async function fetchBacklogIssues(
   searchParams.append("count", "100");
 
   try {
-    const res = await fetchImpl(`${baseUrl}/api/v2/issues?${searchParams.toString()}`, {
+    const url = `${baseUrl}/api/v2/issues?${searchParams.toString()}`;
+    console.log('[Backlog API] Fetching issues:', url);
+    const res = await fetchImpl(url, {
       method: "GET",
       headers: { Authorization: `Bearer ${params.accessToken}` },
     });
+    if (res.status === 401) throw new Error('401');
     if (!res.ok) return { status: "error", error: `Lỗi fetch issues (${res.status})` };
     const data = await res.json();
+    console.log('[Backlog API] Issues response:', Array.isArray(data) ? `array(${data.length})` : data);
     return { status: "success", issues: data };
   } catch (e: any) {
+    if (e.message === '401') throw e;
     return { status: "error", error: String(e) };
   }
 }

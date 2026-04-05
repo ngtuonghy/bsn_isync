@@ -1,79 +1,66 @@
 import { LazyStore } from '@tauri-apps/plugin-store';
 
-/**
- * Global singleton store instance with autoSave enabled (500ms debounce).
- * In Tauri v2, LazyStore handles internal loading on first use.
- */
-const store = new LazyStore('bsn_isync_store.json', { defaults: {}, autoSave: 500 });
+let storeInstance: LazyStore | null = null;
+
+export function getStore(): LazyStore {
+  if (!storeInstance) {
+    storeInstance = new LazyStore('bsn_isync_store.json');
+    console.log('[Store] LazyStore initialized');
+  }
+  return storeInstance;
+}
 
 export function useStore() {
-  /**
-   * Set a value in the store. 
-   * Local changes are reactive in the store instance, and autoSave handles disk persistence.
-   */
   async function setItem(key: string, value: any) {
     try {
-      await store.set(key, value);
-      console.log(`[Store] Key "${key}" updated.`);
+      const s = getStore();
+      await s.set(key, value);
+      await s.save();
+      console.log(`[Store] Saved: ${key}`, value);
     } catch (e) {
-      console.error(`[Store] Failed to set key "${key}":`, e);
+      console.error(`[Store] Failed to set "${key}":`, e);
     }
   }
 
-  /**
-   * Get a value from the store.
-   * Returns null if the value is undefined or not found for consistency.
-   */
   async function getItem<T>(key: string): Promise<T | null> {
     try {
-      const val = await store.get<T>(key);
+      const s = getStore();
+      const val = await s.get<T>(key);
       return val ?? null;
     } catch (e) {
-      console.error(`[Store] Failed to get key "${key}":`, e);
+      console.error(`[Store] Failed to get "${key}":`, e);
       return null;
     }
   }
 
-  /**
-   * Remove a key from the store.
-   */
   async function removeItem(key: string) {
     try {
-      await store.delete(key);
+      const s = getStore();
+      await s.delete(key);
+      await s.save();
     } catch (e) {
-      console.error(`[Store] Failed to delete key "${key}":`, e);
+      console.error(`[Store] Failed to delete "${key}":`, e);
     }
   }
 
-  /**
-   * Clear all entries in the store.
-   */
   async function clear() {
     try {
-      await store.clear();
+      const s = getStore();
+      await s.clear();
+      await s.save();
     } catch (e) {
-      console.error("[Store] Failed to clear store:", e);
+      console.error("[Store] Failed to clear:", e);
     }
   }
 
-  /**
-   * Manually trigger a save. 
-   * (Usually not needed if autoSave is enabled)
-   */
   async function save() {
     try {
-      await store.save();
+      const s = getStore();
+      await s.save();
     } catch (e) {
-      console.error("[Store] Failed to save store:", e);
+      console.error("[Store] Failed to save:", e);
     }
   }
 
-  return {
-    setItem,
-    getItem,
-    removeItem,
-    clear,
-    save,
-    store // expose raw store if needed
-  };
+  return { setItem, getItem, removeItem, clear, save };
 }
