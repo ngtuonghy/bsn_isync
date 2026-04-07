@@ -10,7 +10,7 @@ import { toast } from "vue-sonner";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile, watch as fsWatch } from "@tauri-apps/plugin-fs";
+import { writeTextFile, watch as fsWatch, exists } from "@tauri-apps/plugin-fs";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { register as registerShortcut, unregister as unregisterShortcut, isRegistered } from "@tauri-apps/plugin-global-shortcut";
@@ -1358,10 +1358,13 @@ async function setupTargetWatcher() {
   if (!runner.autoWatchTargetTest && !runner.autoWatchTargetRun) return;
   if (!runner.startupProject) return;
 
-  const targetDir = runner.startupProject.replace(/[\\/][^\\/]+$/, '');
+  const targetDir = runner.startupProject.replace(/[\\\/][^\\\/]+$/, '');
   if (!targetDir) return;
 
   try {
+    const dirExists = await exists(targetDir);
+    if (!dirExists) return;
+
     // @ts-ignore
     unwatchTargetDir = await fsWatch(targetDir, (event: any) => {
       const typeStr = JSON.stringify(event.type);
@@ -1385,7 +1388,7 @@ async function setupTargetWatcher() {
           }
         }
       }
-    }, { delayMs: 1000 });
+    }, { delayMs: 1000, recursive: true });
   } catch (e) {
     console.error("Failed to watch target dir", e);
   }
@@ -1397,17 +1400,26 @@ async function setupBatWatcher() {
     unwatchBatFile = undefined;
   }
   
-  if (!runner.autoWatchTargetTest && !runner.autoWatchTargetRun) return;
+  if (!runner.autoWatchBat && !runner.autoWatchTargetTest && !runner.autoWatchTargetRun) return;
   
   const filesToWatch = [runner.batFilePath, ...(runner.batFiles || [])].filter(b => b && b.trim());
   if (filesToWatch.length === 0) return;
 
+  // Filter to only files that actually exist on disk
+  const existingFiles: string[] = [];
+  for (const f of filesToWatch) {
+    try {
+      if (await exists(f)) existingFiles.push(f);
+    } catch {}
+  }
+  if (existingFiles.length === 0) return;
+
   try {
     // @ts-ignore
-    unwatchBatFile = await fsWatch(filesToWatch, (event: any) => {
+    unwatchBatFile = await fsWatch(existingFiles, (event: any) => {
       const typeStr = JSON.stringify(event.type);
       if (typeStr.includes('modify') || typeStr.includes('any')) {
-        if (runner.autoWatchTargetTest && !runner.loadingTarget && !runner.buildStatus) {
+        if ((runner.autoWatchBat || runner.autoWatchTargetTest) && !runner.loadingTarget && !runner.buildStatus) {
           toast.info("BAT file changed, auto-running test...");
           sendNotification({ title: 'BSN iSync', body: 'BAT file changed. Auto-running test...' });
           dotnet('run', 'bat');
@@ -1443,13 +1455,13 @@ watch(() => runner.autoWatchTargetRun, (val) => {
   localStorage.setItem("bsn_isync:global_watch_run", String(val));
 });
 
-watch(() => [runner.autoWatchTargetTest, runner.autoWatchTargetRun, runner.batFilePath, runner.batFiles], () => {
+watch(() => [runner.autoWatchBat, runner.autoWatchTargetTest, runner.autoWatchTargetRun, runner.batFilePath, runner.batFiles], () => {
   setupBatWatcher();
-}, { deep: true });
+}, { deep: true, immediate: true });
 
 watch(() => [runner.autoWatchTargetTest, runner.autoWatchTargetRun, runner.startupProject], () => {
   setupTargetWatcher();
-}, { deep: true });
+}, { deep: true, immediate: true });
 
 // Watch for SQL context changes to auto-test
 watch(
