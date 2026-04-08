@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, reactive, watch, nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { watch as fsWatch, exists } from '@tauri-apps/plugin-fs';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
@@ -792,7 +793,7 @@ export const useRunnerStore = defineStore('runner', () => {
     const time8 = `${hms}${ms}`;
     const host6 = uiStore.localHostname.substring(0, 6).toUpperCase();
 
-    return args.replace(/{time}/g, time8).replace(/{hostname}/g, host6);
+    return args.replace(/{time}/g, time8).replace(/{hostname}/g, host6).replace(/\s+/g, ' ').trim();
   }
 
   async function pickProjectFolder() {
@@ -988,6 +989,9 @@ export const useRunnerStore = defineStore('runner', () => {
     await invoke('pty_write', { id: 'main', data: `cd '${projectDir}'\r` });
     const cmd = `dotnet ${mode} "${projectFile}" -c ${config.value}\r`;
     await invoke('pty_write', { id: 'main', data: cmd });
+    if (mode === 'build') {
+      await invoke('invalidate_build_fingerprint').catch(() => {});
+    }
   }
 
   async function dotnet(cmd: 'restore' | 'build' | 'run', target: 'exe' | 'bat' = 'exe', overrideArgs?: string) {
@@ -1021,6 +1025,7 @@ export const useRunnerStore = defineStore('runner', () => {
     let runId = '';
     let runName = '';
     try {
+      // Use shared terminal for bat and test_exe, separate for exe
       const useSharedTerminal = actualTarget === 'bat' || actualTarget === 'test_exe';
       if (actualTarget === 'exe' || actualTarget === 'test_exe' || actualTarget === 'bat') {
         runName = actualTarget === 'bat' ? 'BAT' : 'EXE';
@@ -1054,9 +1059,20 @@ export const useRunnerStore = defineStore('runner', () => {
         }
       }
 
-      const allBats = isExeTest 
-        ? [batFilePath.value].filter(b => b && b.trim()) 
-        : [batFilePath.value, ...(batFiles.value || [])].filter(b => b && b.trim());
+      // For bat/test target: only run selected BAT. For exe target: run all BATs
+      const batIndex = activeBatConfigIndex.value || 0;
+      const activeBatPath = batIndex === 0 ? batFilePath.value : (batFiles.value?.[batIndex - 1] || batFilePath.value);
+      
+      let allBats: string[] = [];
+      if (!activeBatPath || !activeBatPath.trim()) {
+        allBats = [];
+      } else if (actualTarget === 'exe') {
+        // Run all BATs for exe target
+        allBats = [batFilePath.value, ...(batFiles.value || [])].filter(b => b && b.trim());
+      } else {
+        // Only run selected BAT for bat/test target
+        allBats = [activeBatPath];
+      }
       
       const tasks: { target: string, batPath: string | null, ptyId: string, name: string, args: string }[] = [];
       
@@ -1173,6 +1189,7 @@ export const useRunnerStore = defineStore('runner', () => {
     try {
       const cmd = `dotnet build "${startupProject.value}" -c ${config.value}\r`;
       await invoke('pty_write', { id: 'main', data: cmd });
+      await invoke('invalidate_build_fingerprint').catch(() => {});
     } catch (e: any) {
       toast.error(String(e));
     } finally {
@@ -1480,67 +1497,100 @@ export const useRunnerStore = defineStore('runner', () => {
   }
 
   function insertTimePlaceholder() {
-    const targetRef = isExeTestMode.value ? argsInputRefExe.value : argsInputRefBat.value;
-    let input = targetRef?.$el as HTMLInputElement | undefined;
-    if (input && input.tagName !== 'INPUT') input = input.querySelector('input') as HTMLInputElement | undefined;
+    const placeholder = '{time}';
+    const isExe = isExeTestMode.value;
+    
+    // Try to find the currently focused input
+    const activeEl = document.activeElement as HTMLInputElement | HTMLTextAreaElement | undefined;
+    let input: HTMLInputElement | HTMLTextAreaElement | undefined;
+    let inputVal: string;
+    let setValue: (v: string) => void;
+    
+    if (isExe) {
+      inputVal = exeArgs.value;
+      setValue = (v) => { exeArgs.value = v; };
+    } else {
+      inputVal = runArgs.value;
+      setValue = (v) => { runArgs.value = v; };
+    }
+    
+    // Use active element if it's an input and belongs to our args
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+      // Check if this is one of our args inputs by checking parent class
+      if (activeEl.closest('.group\\/args')) {
+        input = activeEl;
+      }
+    }
+    
+    // If no valid input found, fallback to append
     if (!input) {
-      if (isExeTestMode.value) exeArgs.value += ' {time}';
-      else runArgs.value += ' {time}';
+      setValue(inputVal + ' ' + placeholder);
       return;
     }
-
-    const isExe = isExeTestMode.value;
-    const start = input.selectionStart ?? (isExe ? exeArgs.value.length : runArgs.value.length);
-    const end = input.selectionEnd ?? (isExe ? exeArgs.value.length : runArgs.value.length);
-    const val = isExe ? exeArgs.value : runArgs.value;
-
-    const prefix = val.substring(0, start);
-    const suffix = val.substring(end);
-    const insertStr = (prefix.length > 0 && !prefix.endsWith(' ')) ? ' {time}' : '{time}';
+    
+    // Insert at cursor position
+    const start = input.selectionStart ?? inputVal.length;
+    const end = input.selectionEnd ?? start;
+    const prefix = inputVal.substring(0, start);
+    const suffix = inputVal.substring(end);
+    const insertStr = (prefix.length > 0 && !prefix.endsWith(' ')) ? ' ' + placeholder : placeholder;
     const newVal = prefix + insertStr + suffix;
-
-    if (isExe) exeArgs.value = newVal;
-    else runArgs.value = newVal;
-
+    
+    setValue(newVal);
+    
     nextTick(() => {
-      if (input) {
-        input.focus();
-        const newPos = start + insertStr.length;
-        input.setSelectionRange(newPos, newPos);
-      }
+      input?.focus();
+      const newPos = start + insertStr.length;
+      input?.setSelectionRange(newPos, newPos);
     });
   }
 
   function insertHostnamePlaceholder() {
     const placeholder = '{hostname}';
-    const targetRef = isExeTestMode.value ? argsInputRefExe.value : argsInputRefBat.value;
-    let input = targetRef?.$el as HTMLInputElement | undefined;
-    if (input && input.tagName !== 'INPUT') input = input.querySelector('input') as HTMLInputElement | undefined;
+    const isExe = isExeTestMode.value;
+    
+    // Try to find the currently focused input
+    const activeEl = document.activeElement as HTMLInputElement | HTMLTextAreaElement | undefined;
+    let input: HTMLInputElement | HTMLTextAreaElement | undefined;
+    let inputVal: string;
+    let setValue: (v: string) => void;
+    
+    if (isExe) {
+      inputVal = exeArgs.value;
+      setValue = (v) => { exeArgs.value = v; };
+    } else {
+      inputVal = runArgs.value;
+      setValue = (v) => { runArgs.value = v; };
+    }
+    
+    // Use active element if it's an input and belongs to our args
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+      // Check if this is one of our args inputs by checking parent class
+      if (activeEl.closest('.group\\/args')) {
+        input = activeEl;
+      }
+    }
+    
+    // If no valid input found, fallback to append
     if (!input) {
-      if (isExeTestMode.value) exeArgs.value += ' ' + placeholder;
-      else runArgs.value += ' ' + placeholder;
+      setValue(inputVal + ' ' + placeholder);
       return;
     }
-
-    const isExe = isExeTestMode.value;
-    const start = input.selectionStart ?? (isExe ? exeArgs.value.length : runArgs.value.length);
-    const end = input.selectionEnd ?? (isExe ? exeArgs.value.length : runArgs.value.length);
-    const val = isExe ? exeArgs.value : runArgs.value;
-
-    const prefix = val.substring(0, start);
-    const suffix = val.substring(end);
+    
+    // Insert at cursor position
+    const start = input.selectionStart ?? inputVal.length;
+    const end = input.selectionEnd ?? start;
+    const prefix = inputVal.substring(0, start);
+    const suffix = inputVal.substring(end);
     const insertStr = (prefix.length > 0 && !prefix.endsWith(' ')) ? ' ' + placeholder : placeholder;
     const newVal = prefix + insertStr + suffix;
-
-    if (isExe) exeArgs.value = newVal;
-    else runArgs.value = newVal;
-
+    
+    setValue(newVal);
+    
     nextTick(() => {
-      if (input) {
-        input.focus();
-        const newPos = start + insertStr.length;
-        input.setSelectionRange(newPos, newPos);
-      }
+      input?.focus();
+      const newPos = start + insertStr.length;
+      input?.setSelectionRange(newPos, newPos);
     });
   }
 
@@ -2450,6 +2500,21 @@ ${s.content}
         backlogIssueNotFound.value = true;
       }
     }
+  });
+
+  // Listen for build-status and runner-log events from Rust backend
+  listen<string>('build-status', (event) => {
+    const status = event.payload;
+    if (status === 'done' || status === 'error') {
+      buildStatus.value = null;
+    } else {
+      buildStatus.value = status;
+    }
+  });
+
+  listen<string>('runner-log', (event) => {
+    const msg = event.payload;
+    logs.value.push(msg);
   });
 
   return {

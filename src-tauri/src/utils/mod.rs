@@ -219,6 +219,53 @@ pub fn is_looks_like_batch_code(input: &str) -> bool {
     false
 }
 
+pub fn resolve_output_exe_path(
+    startup_abs: &Path,
+    config: &str,
+    deploy_path: Option<&String>,
+    root: &Path,
+) -> PathBuf {
+    let project_dir = startup_abs.parent().unwrap();
+    let source_exe_name = startup_abs
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .replace(".csproj", ".exe");
+
+    // Parse .csproj for custom OutputPath (same logic as copy_alias_exe_and_config)
+    let mut custom_out = None;
+    if let Ok(content) = fs::read_to_string(startup_abs) {
+        let mut condition_matches = true;
+        for line in content.lines() {
+            if line.contains("<PropertyGroup") {
+                condition_matches = if line.contains("Condition=") {
+                    line.contains(config)
+                } else {
+                    true
+                };
+            }
+            if line.contains("<OutputPath>") && condition_matches {
+                let s = line.find("<OutputPath>").unwrap() + 12;
+                let e = line.find("</OutputPath>").unwrap_or(line.len());
+                custom_out = Some(line[s..e].trim().to_string());
+                break;
+            }
+        }
+    }
+
+    // Determine exe directory: deployPath > custom OutputPath > default bin/{config}
+    let exe_dir = if let Some(dp) = deploy_path.filter(|s| !s.trim().is_empty()) {
+        let dp_path = normalize_input_path(dp);
+        if dp_path.is_absolute() { dp_path } else { root.join(dp_path) }
+    } else if let Some(ref p) = custom_out {
+        project_dir.join(p.replace('\\', "/"))
+    } else {
+        project_dir.join("bin").join(config)
+    };
+
+    exe_dir.join(&source_exe_name)
+}
+
 pub fn get_hostname_impl() -> String {
     #[cfg(windows)]
     {

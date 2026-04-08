@@ -566,8 +566,23 @@ pub fn dotnet_run_start(
     let source_fp = project_source_fingerprint(&startup_abs)?;
     let state_key = normalize_path(&startup_abs);
     
-    let is_bat = request.target.as_deref().unwrap_or("exe") == "bat";
+    let target = request.target.as_deref().unwrap_or("exe");
+    let is_bat = target == "bat";
+    let is_exe = target == "exe" || target == "test_exe";
+    let needs_build = is_bat || is_exe;
     
+    // Declare these variables early so they're available after the build block
+    let mut target_abs = startup_abs.clone();
+    if request.target.as_deref() != Some("test_exe") {
+        if let Some(rba) = get_receive_batch_action(&startup_abs) {
+            target_abs = rba;
+        }
+    }
+
+    let mut actual_bat_path = request.bat_file_path.clone();
+    let mut config_template = request.config_template.clone();
+    let mut run_config_template = request.run_config_template.clone();
+
     {
         let mut guard = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
         if let Some(mut child) = guard.child.take() {
@@ -579,41 +594,10 @@ pub fn dotnet_run_start(
         let project_dir = startup_abs.parent().unwrap();
         let startup_file_name = startup_abs.file_name().unwrap().to_str().unwrap();
         let source_exe_name = startup_file_name.replace(".csproj", ".exe");
-        let source_exe_path = project_dir.join("bin").join(&config).join(&source_exe_name);
+        let source_exe_path = resolve_output_exe_path(&startup_abs, &config, request.deploy_path.as_ref(), &root);
 
+        // Always build for bat and exe targets
         if is_bat {
-            if previous_fp != source_fp || !source_exe_path.exists() {
-                let _ = app.emit("build-status", "building");
-                let _ = app.emit("runner-log", format!("[BUILD] Building target project for test: {}...", startup_file_name));
-                drop(guard);
-                
-                let mut build = new_command("dotnet");
-                build.current_dir(project_dir).arg("build").arg(startup_file_name).arg("-c").arg(&config);
-                let build_out = run_capture(build)?;
-
-                if !build_out.stdout.trim().is_empty() {
-                    for line in build_out.stdout.lines() {
-                         let _ = app.emit("runner-log", format!("  {}", line));
-                    }
-                }
-                if !build_out.stderr.trim().is_empty() {
-                    for line in build_out.stderr.lines() {
-                         let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
-                    }
-                }
-
-                if build_out.code != 0 {
-                    let _ = app.emit("build-status", "error");
-                    let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
-                    return Err(format!("Build failed, exit code {}", build_out.code));
-                }
-                
-                let mut guard2 = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
-                guard2.fingerprints.insert(state_key.clone(), source_fp);
-                let _ = app.emit("build-status", "done");
-                let _ = app.emit("runner-log", "[BUILD] Target project built successfully.");
-            }
-        } else if previous_fp != source_fp || !source_exe_path.exists() {
             let _ = app.emit("build-status", "building");
             let _ = app.emit("runner-log", "[BUILD] Rebuilding project...");
             drop(guard);
@@ -627,12 +611,12 @@ pub fn dotnet_run_start(
             let build_out = run_capture(build)?;
             if !build_out.stdout.trim().is_empty() {
                 for line in build_out.stdout.lines() {
-                     let _ = app.emit("runner-log", format!("  {}", line));
+                    let _ = app.emit("runner-log", format!("  {}", line));
                 }
             }
             if !build_out.stderr.trim().is_empty() {
                 for line in build_out.stderr.lines() {
-                     let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
+                    let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
                 }
             }
             if build_out.code != 0 {
@@ -641,7 +625,7 @@ pub fn dotnet_run_start(
                 return Err(format!("Build failed, exit code {}", build_out.code));
             }
             
-            let mut target_abs = startup_abs.clone();
+            let mut bat_target_abs = startup_abs.clone();
             if request.target.as_deref() != Some("test_exe") {
                 if let Some(rba) = get_receive_batch_action(&startup_abs) {
                     let rba_fp = project_source_fingerprint(&rba).unwrap_or(0);
@@ -649,31 +633,31 @@ pub fn dotnet_run_start(
                     let prev_rba_fp = state.0.lock().unwrap().fingerprints.get(&rba_key).copied().unwrap_or(0);
 
                     if prev_rba_fp != rba_fp {
-                    let _ = app.emit("build-status", "building_rba");
-                    let _ = app.emit("runner-log", "[UPDATE] Updating ReceiveBatchAction...");
-                    let mut rba_build = new_command("dotnet");
-                    rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
-                    let rba_out = run_capture(rba_build)?;
-                    if !rba_out.stdout.trim().is_empty() {
-                        for line in rba_out.stdout.lines() {
-                            let _ = app.emit("runner-log", format!("  {}", line));
+                        let _ = app.emit("build-status", "building_rba");
+                        let _ = app.emit("runner-log", "[UPDATE] Updating ReceiveBatchAction...");
+                        let mut rba_build = new_command("dotnet");
+                        rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
+                        let rba_out = run_capture(rba_build)?;
+                        if !rba_out.stdout.trim().is_empty() {
+                            for line in rba_out.stdout.lines() {
+                                let _ = app.emit("runner-log", format!("  {}", line));
+                            }
                         }
-                    }
-                    if !rba_out.stderr.trim().is_empty() {
-                         for line in rba_out.stderr.lines() {
-                            let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
+                        if !rba_out.stderr.trim().is_empty() {
+                            for line in rba_out.stderr.lines() {
+                                let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
+                            }
                         }
-                    }
-                    if rba_out.code != 0 {
-                        let _ = app.emit("build-status", "error");
-                        let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction failed (code {})", rba_out.code));
-                        return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
-                    }
+                        if rba_out.code != 0 {
+                            let _ = app.emit("build-status", "error");
+                            let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction failed (code {})", rba_out.code));
+                            return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
+                        }
                         if let Ok(mut guard) = state.0.lock() {
                             guard.fingerprints.insert(rba_key, rba_fp);
                         }
                     }
-                    target_abs = rba;
+                    bat_target_abs = rba;
                 }
             }
 
@@ -692,7 +676,7 @@ pub fn dotnet_run_start(
             if request.target.as_deref() != Some("test_exe") {
                 if let Some(copy_msg) = copy_alias_exe_and_config(
                     &root,
-                    &target_abs,
+                    &bat_target_abs,
                     &config,
                     request.alias_exe_name.as_ref(),
                     None,
@@ -706,20 +690,79 @@ pub fn dotnet_run_start(
             let mut guard2 = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
             guard2.fingerprints.insert(state_key.clone(), source_fp);
             let _ = app.emit("build-status", "done");
+        } else if is_exe {
+            // Always build for exe target
+            let _ = app.emit("build-status", "building");
+            let _ = app.emit("runner-log", "[BUILD] Rebuilding project...");
+            drop(guard);
+            let mut build = new_command("dotnet");
+            build
+                .current_dir(project_dir)
+                .arg("build")
+                .arg(startup_file_name)
+                .arg("-c")
+                .arg(&config);
+            let build_out = run_capture(build)?;
+            if !build_out.stdout.trim().is_empty() {
+                for line in build_out.stdout.lines() {
+                    let _ = app.emit("runner-log", format!("  {}", line));
+                }
+            }
+            if !build_out.stderr.trim().is_empty() {
+                for line in build_out.stderr.lines() {
+                    let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
+                }
+            }
+            if build_out.code != 0 {
+                let _ = app.emit("build-status", "error");
+                let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
+                return Err(format!("Build failed, exit code {}", build_out.code));
+            }
+            let _ = app.emit("build-status", "done");
         }
-    }
 
-    let mut target_abs = startup_abs.clone();
-    if request.target.as_deref() != Some("test_exe") {
-        if let Some(rba) = get_receive_batch_action(&startup_abs) {
-            target_abs = rba;
+        // Only copy config for the selected target
+        if target == "bat" {
+            // For bat: copy to where the bat file is
+            let _ = copy_alias_exe_and_config(
+                &root,
+                &startup_abs,
+                &config,
+                None,
+                request.config_template.as_ref(),
+                None,
+                request.deploy_path.as_ref(),
+                request.bat_file_path.as_ref(),
+            );
+        } else if target == "exe" {
+            // For exe: copy to both startup and RBA
+            let _ = copy_alias_exe_and_config(
+                &root,
+                &startup_abs,
+                &config,
+                request.alias_exe_name.as_ref(),
+                config_template.as_ref(),
+                None,
+                request.deploy_path.as_ref(),
+                actual_bat_path.as_ref(),
+            );
+            if let Some(rba) = get_receive_batch_action(&startup_abs) {
+                let _ = copy_alias_exe_and_config(
+                    &root,
+                    &rba,
+                    &config,
+                    request.alias_exe_name.as_ref(),
+                    None,
+                    run_config_template.as_ref(),
+                    request.deploy_path.as_ref(),
+                    actual_bat_path.as_ref(),
+                );
+            }
         }
-    }
+        // test_exe: no config copy needed
+    } // end of outer block
 
-    let mut actual_bat_path = request.bat_file_path.clone();
-    let mut config_template = request.config_template.clone();
-    let mut run_config_template = request.run_config_template.clone();
-
+    // force_unicode processing for both bat and exe targets
     if request.force_unicode.unwrap_or(false) {
         if let Some(ref bat_str) = request.bat_file_path {
             let bat_path = Path::new(bat_str);
@@ -747,56 +790,17 @@ pub fn dotnet_run_start(
                             i += 1;
                         }
                     }
-                    
+
                     if changed {
                         let file_stem = bat_path.file_stem().unwrap().to_string_lossy();
                         let new_bat_path = bat_path.with_file_name(format!("{}_isync.bat", file_stem));
                         if fs::write(&new_bat_path, &new_content).is_ok() {
                             let new_bat_str = new_bat_path.to_string_lossy().to_string();
-                            if let Ok(mut guard) = state.0.lock() {
-                                if !guard.temp_files.contains(&new_bat_str) {
-                                    guard.temp_files.push(new_bat_str.clone());
-                                }
-                            }
-                            if let Some(c) = config_template.as_mut() {
-                                *c = c.replace(bat_str, &new_bat_str);
-                                *c = c.replace(&bat_str.replace("\\", "\\\\"), &new_bat_str.replace("\\", "\\\\"));
-                            }
-                            if let Some(c) = run_config_template.as_mut() {
-                                *c = c.replace(bat_str, &new_bat_str);
-                                *c = c.replace(&bat_str.replace("\\", "\\\\"), &new_bat_str.replace("\\", "\\\\"));
-                            }
                             actual_bat_path = Some(new_bat_str);
                         }
                     }
                 }
             }
-        }
-    }
-
-    let _ = copy_alias_exe_and_config(
-        &root,
-        &startup_abs,
-        &config,
-        request.alias_exe_name.as_ref(),
-        config_template.as_ref(),
-        None,
-        request.deploy_path.as_ref(),
-        actual_bat_path.as_ref(),
-    );
-
-    if request.target.as_deref() != Some("test_exe") {
-        if let Some(rba) = get_receive_batch_action(&startup_abs) {
-            let _ = copy_alias_exe_and_config(
-                &root,
-                &rba,
-                &config,
-                request.alias_exe_name.as_ref(),
-                None,
-                run_config_template.as_ref(),
-                request.deploy_path.as_ref(),
-                actual_bat_path.as_ref(),
-            );
         }
     }
 
@@ -821,25 +825,25 @@ pub fn dotnet_run_start(
     
     let mut custom_out = None;
     if let Ok(content) = fs::read_to_string(run_project_abs) {
-            let mut condition_matches = true;
-            for line in content.lines() {
-                if line.contains("<PropertyGroup") {
-                    if line.contains("Condition=") {
-                        condition_matches = line.contains(&config);
-                    } else {
-                        condition_matches = true;
-                    }
+        let mut condition_matches = true;
+        for line in content.lines() {
+            if line.contains("<PropertyGroup") {
+                if line.contains("Condition=") {
+                    condition_matches = line.contains(&config);
+                } else {
+                    condition_matches = true;
                 }
-                if line.contains("<OutputPath>") {
-                    if condition_matches {
-                        let s = line.find("<OutputPath>").unwrap() + 12;
-                        let e = line.find("</OutputPath>").unwrap_or(line.len());
-                        custom_out = Some(line[s..e].trim().to_string());
-                        break;
-                    }
+            }
+            if line.contains("<OutputPath>") {
+                if condition_matches {
+                    let s = line.find("<OutputPath>").unwrap() + 12;
+                    let e = line.find("</OutputPath>").unwrap_or(line.len());
+                    custom_out = Some(line[s..e].trim().to_string());
+                    break;
                 }
             }
         }
+    }
     let dst_dir = if let Some(dp) = request.deploy_path.as_ref().filter(|s| !s.trim().is_empty()) {
         let dp_path = normalize_input_path(dp);
         if dp_path.is_absolute() {
@@ -1233,4 +1237,13 @@ pub fn check_environment() -> Vec<ToolCheck> {
     results.push(sqlcmd);
 
     results
+}
+
+#[tauri::command]
+pub fn invalidate_build_fingerprint(
+    state: State<RunnerState>,
+) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|_| "State lock error".to_string())?;
+    guard.fingerprints.clear();
+    Ok(())
 }

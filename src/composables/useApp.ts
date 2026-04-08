@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted } from 'vue';
 import { getCurrent } from '@tauri-apps/plugin-deep-link';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { useUiStore } from '@/stores/useUiStore';
 import { useRunnerStore } from '@/stores/useRunnerStore';
 import { useTerminalStore } from '@/stores/useTerminalStore';
@@ -36,6 +37,14 @@ export function setupApp() {
   onMounted(async () => {
     await uiStore.checkForUpdates();
     uiStore.checkEnv();
+    
+    // Get hostname from backend
+    try {
+      const hostname = await invoke<string>('get_hostname');
+      uiStore.localHostname = hostname;
+    } catch (e) {
+      console.error('Failed to get hostname:', e);
+    }
     
     await runnerStore.loadWorkspaceRoot();
     await backlogStore.initBacklog();

@@ -14,12 +14,13 @@ pub use runner::{
     dotnet_run_start, dotnet_run_stop, dotnet_run_is_running, deploy_project_config,
     fetch_project_config, sync_asset, get_hostname, run_sql_only, prepare_sql_temp_file,
     prepare_batch_temp_file, open_file, check_environment, check_sql_connection,
+    invalidate_build_fingerprint,
 };
 pub use utils::{CommandResult, normalize_path, normalize_input_path, validate_startup_abs,
     new_command, run_capture, get_build_config, build_default_config_template,
     collect_source_fingerprint, project_source_fingerprint, collect_project_files,
     top_group_root, get_receive_batch_action, is_looks_like_batch_code, get_hostname_impl,
-    CREATE_NO_WINDOW};
+    resolve_output_exe_path, CREATE_NO_WINDOW};
 
 mod backlog_auth;
 pub use crate::backlog_auth::{get_backlog_auth_url, backlog_oauth_exchange, backlog_oauth_refresh, get_backlog_config};
@@ -95,6 +96,7 @@ pub fn run() {
             deploy_project_config,
             fetch_project_config,
             check_environment,
+            invalidate_build_fingerprint,
             updater::check_update,
             updater::download_and_install_update,
             updater::restart_app
