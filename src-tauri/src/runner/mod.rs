@@ -106,8 +106,9 @@ pub fn copy_alias_exe_and_config(
     alias_exe_name: Option<&String>,
     config_template: Option<&String>,
     run_config_template: Option<&String>,
-    deploy_path: Option<&String>,
+    _deploy_path: Option<&String>,
     bat_file_path: Option<&String>,
+    use_app_config: bool,
 ) -> Result<Option<String>, String> {
     let is_rba = startup_abs.to_string_lossy().to_ascii_lowercase().contains("receivebatchaction");
     let mut alias = alias_exe_name
@@ -137,13 +138,11 @@ pub fn copy_alias_exe_and_config(
                     condition_matches = true;
                 }
             }
-            if line.contains("<OutputPath>") {
-                if condition_matches {
-                    let s = line.find("<OutputPath>").unwrap() + 12;
-                    let e = line.find("</OutputPath>").unwrap_or(line.len());
-                    custom_out = Some(line[s..e].trim().to_string());
-                    break;
-                }
+            if line.contains("<OutputPath>") && condition_matches {
+                let s = line.find("<OutputPath>").unwrap() + 12;
+                let e = line.find("</OutputPath>").unwrap_or(line.len());
+                custom_out = Some(line[s..e].trim().to_string());
+                break;
             }
         }
     }
@@ -160,14 +159,7 @@ pub fn copy_alias_exe_and_config(
         alias.clone()
     };
     
-    let dst_dir = if let Some(p) = deploy_path {
-        let pb = normalize_input_path(p);
-        if pb.is_absolute() {
-            pb
-        } else {
-            root.join(pb)
-        }
-    } else if let Some(ref p) = custom_out {
+    let dst_dir = if let Some(ref p) = custom_out {
         project_dir.join(p.replace('\\', "/"))
     } else {
         project_dir.join("bin").join(&config)
@@ -207,16 +199,79 @@ pub fn copy_alias_exe_and_config(
     
     let config_path = dst.with_extension("exe.config");
     
-    let effective_template = if is_rba && run_config_template.is_some() {
-        run_config_template
+    // Use App.config from project directory as base
+    let app_config_path = project_dir.join("App.config");
+    let base_config = if app_config_path.exists() {
+        fs::read_to_string(&app_config_path).unwrap_or_else(|_| String::new())
     } else {
-        config_template
+        String::new()
     };
-
-    let template = effective_template
-        .map(|x| x.trim().to_string())
-        .filter(|x| !x.is_empty())
-        .unwrap_or_else(|| build_default_config_template(&alias, bat_file_path.map(|s| s.as_str()).unwrap_or("")));
+    
+    // If no base config, use template directly
+    let template = if base_config.is_empty() {
+        config_template
+            .or(run_config_template)
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .unwrap_or_else(|| build_default_config_template(&alias, bat_file_path.map(|s| s.as_str()).unwrap_or("")))
+    } else {
+        // Get the template to use (prefer config_template, fallback to run_config_template)
+        let template_src = config_template.or(run_config_template);
+        
+        if use_app_config {
+            // Bat target: use template as base, replace connectionStrings from App.config
+            let mut result = template_src
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .unwrap_or_else(|| base_config.clone());
+            
+            // Replace connectionStrings from base (App.config)
+            if let Some(cs_start) = base_config.find("<connectionStrings>") {
+                if let Some(cs_end) = base_config.find("</connectionStrings>") {
+                    let cs_section = &base_config[cs_start..cs_end + 19];
+                    if let Some(result_cs_start) = result.find("<connectionStrings>") {
+                        if let Some(result_cs_end) = result.find("</connectionStrings>") {
+                            result = format!("{}{}{}", &result[..result_cs_start], cs_section, &result[result_cs_end + 19..]);
+                        }
+                    }
+                }
+            }
+            result
+        } else {
+            // Exe target: use App.config as base, replace Job.MsmqName/Job.BatFilePath from template
+            let mut result = base_config.clone();
+            
+            if let Some(t) = template_src {
+                // Replace Job.MsmqName
+                if let Some(start) = t.find("Job.MsmqName") {
+                    let line_start = t[..start].rfind("<add key=").map(|i| t[i..].find("/>").map(|e| i + e + 2)).flatten();
+                    if let Some(ls) = line_start {
+                        let new_line = &t[ls..ls + t[ls..].find("/>").unwrap_or(0) + 2];
+                        if let Some(bi) = result.rfind("Job.MsmqName") {
+                            let bls = result[..bi].rfind("<add key=").map(|i| result[i..].find("/>").map(|e| i + e + 2)).flatten();
+                            if let Some(bl) = bls {
+                                result = format!("{}{}{}", &result[..bl], new_line, &result[bl + result[bl..].find("/>").unwrap_or(0) + 2..]);
+                            }
+                        }
+                    }
+                }
+                // Replace Job.BatFilePath
+                if let Some(start) = t.find("Job.BatFilePath") {
+                    let line_start = t[..start].rfind("<add key=").map(|i| t[i..].find("/>").map(|e| i + e + 2)).flatten();
+                    if let Some(ls) = line_start {
+                        let new_line = &t[ls..ls + t[ls..].find("/>").unwrap_or(0) + 2];
+                        if let Some(bi) = result.rfind("Job.BatFilePath") {
+                            let bls = result[..bi].rfind("<add key=").map(|i| result[i..].find("/>").map(|e| i + e + 2)).flatten();
+                            if let Some(bl) = bls {
+                                result = format!("{}{}{}", &result[..bl], new_line, &result[bl + result[bl..].find("/>").unwrap_or(0) + 2..]);
+                            }
+                        }
+                    }
+                }
+            }
+            result
+        }
+    };
     
     fs::write(&config_path, template).map_err(|e| format!("Failed to write config file: {e}"))?;
     Ok(Some(format!(
@@ -225,6 +280,104 @@ pub fn copy_alias_exe_and_config(
         normalize_path(&dst),
         normalize_path(&config_path)
     )))
+}
+
+/// Resolves the output directory from a csproj file's OutputPath for the given build config
+fn resolve_csproj_output_dir(csproj_path: &Path, config: &str) -> PathBuf {
+    let project_dir = csproj_path.parent().unwrap();
+    if let Ok(content) = fs::read_to_string(csproj_path) {
+        let mut condition_matches = true;
+        for line in content.lines() {
+            if line.contains("<PropertyGroup") {
+                condition_matches = if line.contains("Condition=") {
+                    line.contains(config)
+                } else {
+                    true
+                };
+            }
+            if line.contains("<OutputPath>") && condition_matches {
+                let s = line.find("<OutputPath>").unwrap() + 12;
+                let e = line.find("</OutputPath>").unwrap_or(line.len());
+                let output_path = line[s..e].trim();
+                return project_dir.join(output_path.replace('\\', "/"));
+            }
+        }
+    }
+    project_dir.join("bin").join(config)
+}
+
+/// Writes config template content to {OutputPath}/{projectName}.exe.config
+fn write_config_for_project(
+    csproj_path: &Path,
+    build_config: &str,
+    config_content: &str,
+) -> Result<String, String> {
+    let output_dir = resolve_csproj_output_dir(csproj_path, build_config);
+    let project_name = csproj_path.file_stem().and_then(|s| s.to_str()).unwrap_or("app");
+    let config_file = format!("{}.exe.config", project_name);
+    let config_path = output_dir.join(&config_file);
+    fs::create_dir_all(&output_dir).map_err(|e| format!("Could not create output dir: {e}"))?;
+    fs::write(&config_path, config_content).map_err(|e| format!("Failed to write config: {e}"))?;
+    Ok(format!("Wrote config: {}", normalize_path(&config_path)))
+}
+
+/// Copies RBA exe with alias name and writes its config to {RBA OutputPath}/{alias}.exe.config
+fn copy_rba_exe_with_config(
+    rba_csproj: &Path,
+    build_config: &str,
+    alias_name: &str,
+    config_content: &str,
+) -> Result<String, String> {
+    let output_dir = resolve_csproj_output_dir(rba_csproj, build_config);
+    let source_name = rba_csproj.file_stem().and_then(|s| s.to_str())
+        .map(|s| format!("{}.exe", s))
+        .ok_or_else(|| "Invalid RBA csproj".to_string())?;
+    let source_exe = output_dir.join(&source_name);
+
+    let mut alias = alias_name.to_string();
+    if !alias.to_ascii_lowercase().ends_with(".exe") {
+        alias.push_str(".exe");
+    }
+    let dest_exe = output_dir.join(&alias);
+
+    fs::create_dir_all(&output_dir).map_err(|e| format!("Could not create output dir: {e}"))?;
+    let source_canon = fs::canonicalize(&source_exe)
+        .map_err(|e| format!("RBA exe not found after build: {e}"))?;
+    let dest_canon = fs::canonicalize(&dest_exe).ok();
+
+    if Some(source_canon.clone()) != dest_canon {
+        // Clean up old .bak files
+        if let Some(dst_stem) = dest_exe.file_stem().and_then(|s| s.to_str()) {
+            let bak_prefix = format!("{}.bak.", dst_stem);
+            if let Ok(entries) = fs::read_dir(&output_dir) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if name.starts_with(&bak_prefix) {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+        if dest_exe.exists() {
+            let ts = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+            let temp = dest_exe.with_extension(format!("bak.{}", ts));
+            let _ = fs::rename(&dest_exe, &temp);
+            let _ = fs::remove_file(&temp);
+        }
+        fs::copy(&source_canon, &dest_exe).map_err(|e| format!("Failed to copy exe: {e}"))?;
+    }
+
+    // Write config
+    let config_path = dest_exe.with_extension("exe.config");
+    fs::write(&config_path, config_content).map_err(|e| format!("Failed to write RBA config: {e}"))?;
+
+    Ok(format!(
+        "Copied {} -> {}\nWrote config: {}",
+        normalize_path(&source_canon),
+        normalize_path(&dest_exe),
+        normalize_path(&config_path)
+    ))
 }
 
 pub fn run_sql_setup_if_needed(
@@ -432,21 +585,26 @@ pub fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> 
     let mut output = run_capture(cmd)?;
     if mode == "build" && output.code == 0 {
         let mut target_abs = startup_abs.clone();
-        if let Some(rba) = get_receive_batch_action(&startup_abs) {
-            let mut rba_build = new_command("dotnet");
-            rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
-            let rba_out = run_capture(rba_build)?;
-            output.stdout = format!("{}\n[ReceiveBatchAction]\n{}", output.stdout, rba_out.stdout);
-            if !rba_out.stderr.trim().is_empty() {
-                output.stderr = format!("{}\n{}", output.stderr, rba_out.stderr);
-            }
-            if rba_out.code != 0 {
-                output.code = rba_out.code;
-            } else {
-                target_abs = rba;
+        // Only build RBA if startup project is not already the RBA itself
+        let is_startup_rba = startup_abs.to_string_lossy().to_ascii_lowercase().contains("receivebatchaction");
+        if !is_startup_rba {
+            if let Some(rba) = get_receive_batch_action(&startup_abs) {
+                let mut rba_build = new_command("dotnet");
+                rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
+                let rba_out = run_capture(rba_build)?;
+                output.stdout = format!("{}\n[ReceiveBatchAction]\n{}", output.stdout, rba_out.stdout);
+                if !rba_out.stderr.trim().is_empty() {
+                    output.stderr = format!("{}\n{}", output.stderr, rba_out.stderr);
+                }
+                if rba_out.code != 0 {
+                    output.code = rba_out.code;
+                } else {
+                    target_abs = rba;
+                }
             }
         }
         if output.code == 0 {
+            // For dotnet_once build (not exe target), use template as base
             if let Some(copy_msg) = copy_alias_exe_and_config(
                 &root,
                 &target_abs,
@@ -456,6 +614,7 @@ pub fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> 
                 request.run_config_template.as_ref(),
                 request.deploy_path.as_ref(),
                 None,
+                false, // use_app_config = false for dotnet_once
             )? {
                 output.stdout = if output.stdout.trim().is_empty() {
                     copy_msg
@@ -517,6 +676,7 @@ pub fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
     }
 
     if build_out.code == 0 {
+        // For dotnet_rebuild, use template as base (like bat)
         if let Some(copy_msg) = copy_alias_exe_and_config(
             &root,
             &target_abs,
@@ -526,6 +686,7 @@ pub fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
             request.run_config_template.as_ref(),
             request.deploy_path.as_ref(),
             None,
+            false, // use_app_config = false
         )? {
             build_out.stdout = if build_out.stdout.is_empty() {
                 copy_msg
@@ -569,19 +730,19 @@ pub fn dotnet_run_start(
     let target = request.target.as_deref().unwrap_or("exe");
     let is_bat = target == "bat";
     let is_exe = target == "exe" || target == "test_exe";
-    let needs_build = is_bat || is_exe;
     
     // Declare these variables early so they're available after the build block
     let mut target_abs = startup_abs.clone();
-    if request.target.as_deref() != Some("test_exe") {
+    // Only set target_abs to RBA for exe targets (not for bat)
+    if is_exe && request.target.as_deref() != Some("test_exe") {
         if let Some(rba) = get_receive_batch_action(&startup_abs) {
             target_abs = rba;
         }
     }
 
     let mut actual_bat_path = request.bat_file_path.clone();
-    let mut config_template = request.config_template.clone();
-    let mut run_config_template = request.run_config_template.clone();
+    let config_template = request.config_template.clone();
+    let run_config_template = request.run_config_template.clone();
 
     {
         let mut guard = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
@@ -589,12 +750,8 @@ pub fn dotnet_run_start(
             let _ = child.kill();
             let _ = child.wait();
         }
-        let previous_fp = guard.fingerprints.get(&state_key).copied().unwrap_or(0);
-        
         let project_dir = startup_abs.parent().unwrap();
         let startup_file_name = startup_abs.file_name().unwrap().to_str().unwrap();
-        let source_exe_name = startup_file_name.replace(".csproj", ".exe");
-        let source_exe_path = resolve_output_exe_path(&startup_abs, &config, request.deploy_path.as_ref(), &root);
 
         // Always build for bat and exe targets
         if is_bat {
@@ -625,73 +782,19 @@ pub fn dotnet_run_start(
                 return Err(format!("Build failed, exit code {}", build_out.code));
             }
             
-            let mut bat_target_abs = startup_abs.clone();
-            if request.target.as_deref() != Some("test_exe") {
-                if let Some(rba) = get_receive_batch_action(&startup_abs) {
-                    let rba_fp = project_source_fingerprint(&rba).unwrap_or(0);
-                    let rba_key = normalize_path(&rba);
-                    let prev_rba_fp = state.0.lock().unwrap().fingerprints.get(&rba_key).copied().unwrap_or(0);
-
-                    if prev_rba_fp != rba_fp {
-                        let _ = app.emit("build-status", "building_rba");
-                        let _ = app.emit("runner-log", "[UPDATE] Updating ReceiveBatchAction...");
-                        let mut rba_build = new_command("dotnet");
-                        rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
-                        let rba_out = run_capture(rba_build)?;
-                        if !rba_out.stdout.trim().is_empty() {
-                            for line in rba_out.stdout.lines() {
-                                let _ = app.emit("runner-log", format!("  {}", line));
-                            }
-                        }
-                        if !rba_out.stderr.trim().is_empty() {
-                            for line in rba_out.stderr.lines() {
-                                let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
-                            }
-                        }
-                        if rba_out.code != 0 {
-                            let _ = app.emit("build-status", "error");
-                            let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction failed (code {})", rba_out.code));
-                            return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
-                        }
-                        if let Ok(mut guard) = state.0.lock() {
-                            guard.fingerprints.insert(rba_key, rba_fp);
-                        }
-                    }
-                    bat_target_abs = rba;
+            // Write configTemplate (TARGET CONFIG) to target project's OutputPath
+            if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
+                match write_config_for_project(&startup_abs, &config, ct) {
+                    Ok(msg) => { let _ = app.emit("runner-log", msg); },
+                    Err(e) => { let _ = app.emit("runner-log", format!("[WARN] Config write failed: {}", e)); },
                 }
             }
 
-            if let Some(copy_msg) = copy_alias_exe_and_config(
-                &root,
-                &startup_abs,
-                &config,
-                None,
-                request.config_template.as_ref(),
-                None,
-                request.deploy_path.as_ref(),
-                request.bat_file_path.as_ref(),
-            )? {
-                let _ = app.emit("runner-log", copy_msg);
-            }
-            if request.target.as_deref() != Some("test_exe") {
-                if let Some(copy_msg) = copy_alias_exe_and_config(
-                    &root,
-                    &bat_target_abs,
-                    &config,
-                    request.alias_exe_name.as_ref(),
-                    None,
-                    request.run_config_template.as_ref(),
-                    request.deploy_path.as_ref(),
-                    request.bat_file_path.as_ref(),
-                )? {
-                    let _ = app.emit("runner-log", copy_msg);
-                }
-            }
             let mut guard2 = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
             guard2.fingerprints.insert(state_key.clone(), source_fp);
             let _ = app.emit("build-status", "done");
         } else if is_exe {
-            // Always build for exe target
+            // Build target project
             let _ = app.emit("build-status", "building");
             let _ = app.emit("runner-log", "[BUILD] Rebuilding project...");
             drop(guard);
@@ -718,46 +821,53 @@ pub fn dotnet_run_start(
                 let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
                 return Err(format!("Build failed, exit code {}", build_out.code));
             }
-            let _ = app.emit("build-status", "done");
-        }
-
-        // Only copy config for the selected target
-        if target == "bat" {
-            // For bat: copy to where the bat file is
-            let _ = copy_alias_exe_and_config(
-                &root,
-                &startup_abs,
-                &config,
-                None,
-                request.config_template.as_ref(),
-                None,
-                request.deploy_path.as_ref(),
-                request.bat_file_path.as_ref(),
-            );
-        } else if target == "exe" {
-            // For exe: copy to both startup and RBA
-            let _ = copy_alias_exe_and_config(
-                &root,
-                &startup_abs,
-                &config,
-                request.alias_exe_name.as_ref(),
-                config_template.as_ref(),
-                None,
-                request.deploy_path.as_ref(),
-                actual_bat_path.as_ref(),
-            );
-            if let Some(rba) = get_receive_batch_action(&startup_abs) {
-                let _ = copy_alias_exe_and_config(
-                    &root,
-                    &rba,
-                    &config,
-                    request.alias_exe_name.as_ref(),
-                    None,
-                    run_config_template.as_ref(),
-                    request.deploy_path.as_ref(),
-                    actual_bat_path.as_ref(),
-                );
+            
+            // Write configTemplate (TARGET CONFIG) to target project's OutputPath
+            if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
+                match write_config_for_project(&startup_abs, &config, ct) {
+                    Ok(msg) => { let _ = app.emit("runner-log", msg); },
+                    Err(e) => { let _ = app.emit("runner-log", format!("[WARN] Config write failed: {}", e)); },
+                }
             }
+            
+            // Build RBA and copy/rename exe with config
+            if let Some(rba) = get_receive_batch_action(&startup_abs) {
+                let rba_path_str = rba.to_string_lossy().to_string();
+                let _ = app.emit("build-status", "building_rba");
+                let _ = app.emit("runner-log", format!("[BUILD] Building ReceiveBatchAction: {}", rba_path_str));
+                let mut rba_build = new_command("dotnet");
+                rba_build.current_dir(&root).arg("build").arg(&rba_path_str).arg("-c").arg(&config);
+                let rba_out = run_capture(rba_build)?;
+                if !rba_out.stdout.trim().is_empty() {
+                    for line in rba_out.stdout.lines() {
+                        let _ = app.emit("runner-log", format!("  {}", line));
+                    }
+                }
+                if !rba_out.stderr.trim().is_empty() {
+                    for line in rba_out.stderr.lines() {
+                        let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
+                    }
+                }
+                if rba_out.code != 0 {
+                    let _ = app.emit("build-status", "error");
+                    let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction build failed (code {})", rba_out.code));
+                    return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
+                }
+                
+                // Copy RBA exe with bat name alias and write runConfigTemplate (RUN CONFIG EXE)
+                let rba_alias = request.alias_exe_name.as_ref()
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .unwrap_or_else(|| "JE5912.exe".to_string());
+                if let Some(rct) = run_config_template.as_ref().filter(|s| !s.trim().is_empty()) {
+                    match copy_rba_exe_with_config(&rba, &config, &rba_alias, rct) {
+                        Ok(msg) => { let _ = app.emit("runner-log", msg); },
+                        Err(e) => { let _ = app.emit("runner-log", format!("[WARN] RBA config failed: {}", e)); },
+                    }
+                }
+            }
+            
+            let _ = app.emit("build-status", "done");
         }
         // test_exe: no config copy needed
     } // end of outer block
@@ -796,7 +906,32 @@ pub fn dotnet_run_start(
                         let new_bat_path = bat_path.with_file_name(format!("{}_isync.bat", file_stem));
                         if fs::write(&new_bat_path, &new_content).is_ok() {
                             let new_bat_str = new_bat_path.to_string_lossy().to_string();
-                            actual_bat_path = Some(new_bat_str);
+                            actual_bat_path = Some(new_bat_str.clone());
+                            
+                            // For exe target: re-write the RBA config with updated _isync bat path
+                            if target == "exe" {
+                                if let Some(rba) = get_receive_batch_action(&startup_abs) {
+                                    let rba_alias = request.alias_exe_name.as_ref()
+                                        .map(|x| x.trim().to_string())
+                                        .filter(|x| !x.is_empty())
+                                        .unwrap_or_else(|| "JE5912.exe".to_string());
+                                    if let Some(ref rct) = run_config_template {
+                                        // Update Job.BatFilePath in the config to point to _isync bat
+                                        let updated_rct = rct.replace(
+                                            &format!("value=\"{}\"", bat_str),
+                                            &format!("value=\"{}\"", new_bat_str)
+                                        );
+                                        let output_dir = resolve_csproj_output_dir(&rba, &config);
+                                        let mut alias = rba_alias.clone();
+                                        if !alias.to_ascii_lowercase().ends_with(".exe") {
+                                            alias.push_str(".exe");
+                                        }
+                                        let dest_exe = output_dir.join(&alias);
+                                        let config_path = dest_exe.with_extension("exe.config");
+                                        let _ = fs::write(&config_path, &updated_rct);
+                                    }
+                                }
+                            }
                         }
                     }
                 }

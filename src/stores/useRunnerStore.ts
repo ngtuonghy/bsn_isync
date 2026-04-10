@@ -892,7 +892,7 @@ export const useRunnerStore = defineStore('runner', () => {
       if (m) msmq = m[1];
     }
     
-    const syncTemplate = (tpl: string) => {
+    const syncTemplate = (tpl: string, isRunConfig = false) => {
       if (!tpl) return tpl;
       let t = tpl;
       
@@ -905,13 +905,22 @@ export const useRunnerStore = defineStore('runner', () => {
       }
       
       t = t.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
-      t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${activeBatPath || '.\\'}$3`);
+      
+      // For RUN CONFIG (EXE): use _isync bat path when forceUnicode is on
+      let batPathForConfig = activeBatPath || '.\\';
+      if (isRunConfig && forceUnicode.value && activeBatPath) {
+        batPathForConfig = activeBatPath.replace(/\.bat$/i, '_isync.bat');
+      }
+      t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${batPathForConfig}$3`);
       
       if (sqlServer.value) {
         t = t.replace(/(<add\s+key="Report\.DBServer"\s+value=")([^"]*)("\s*\/>)/gi, `$1${sqlServer.value}$3`);
       }
 
-      t = t.replace(/(connectionString=")([^"]*)(")/gi, (_match, pre, cs, post) => {
+      // Replace Execute.EnvId with dev environment value
+      t = t.replace(/(<add\s+key="Execute\.EnvId"\s+value=")([^"]*)("\s*\/>)/gi, `$1Arkbell_Dev$3`);
+
+      t = t.replace(new RegExp('(connectionString=")([^"]*)(")','gi'), (_match: string, pre: string, cs: string, post: string) => {
         const parts = cs.split(';').map((p: string) => p.trim()).filter((p: string) => p.length > 0);
         const kv: Record<string, string> = {};
         const keyOrder: string[] = [];
@@ -972,7 +981,7 @@ export const useRunnerStore = defineStore('runner', () => {
 
     const nConf = syncTemplate(configTemplate.value);
     if (nConf !== configTemplate.value) configTemplate.value = nConf;
-    const nRun = syncTemplate(runConfigTemplate.value);
+    const nRun = syncTemplate(runConfigTemplate.value, true);
     if (nRun !== runConfigTemplate.value) runConfigTemplate.value = nRun;
   }
 
