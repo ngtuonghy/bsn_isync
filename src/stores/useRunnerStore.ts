@@ -1172,12 +1172,18 @@ export const useRunnerStore = defineStore('runner', () => {
             runConfigTemplate: taskRunConfigTemplate,
             forceUnicode: forceUnicode.value,
             ptyId: task.ptyId,
+            isAppRunning: running.value,
           },
         });
       }
 
       if (actualTarget === 'exe') {
         running.value = true;
+        // Switch to the first run terminal so user sees exe output
+        if (runId && runId !== 'main') {
+          terminalStore.termState.active = runId;
+          nextTick(() => terminalStore.termState[runId]?.fit?.fit());
+        }
       }
     } catch (e: any) {
       toast.error(String(e));

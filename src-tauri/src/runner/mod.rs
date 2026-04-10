@@ -64,6 +64,8 @@ pub struct DotnetRequest {
     pub run_args: Option<String>,
     pub deploy_path: Option<String>,
     pub pty_id: Option<String>,
+    #[serde(rename = "isAppRunning")]
+    pub is_app_running: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -750,6 +752,15 @@ pub fn dotnet_run_start(
             let _ = child.kill();
             let _ = child.wait();
         }
+        // Selective cleanup: only remove 'one-off' temp files
+        guard.temp_files.retain(|path| {
+            if path.contains("bsn_isync_batch_") || path.contains("bsn_isync_manual_") {
+                let _ = std::fs::remove_file(path);
+                false // removed from list
+            } else {
+                true // keep in list (shared files like _isync.bat)
+            }
+        });
         let project_dir = startup_abs.parent().unwrap();
         let startup_file_name = startup_abs.file_name().unwrap().to_str().unwrap();
 
@@ -908,6 +919,13 @@ pub fn dotnet_run_start(
                             let new_bat_str = new_bat_path.to_string_lossy().to_string();
                             actual_bat_path = Some(new_bat_str.clone());
                             
+                            // Register for cleanup
+                            if let Ok(mut guard) = state.0.lock() {
+                                if !guard.temp_files.contains(&new_bat_str) {
+                                    guard.temp_files.push(new_bat_str.clone());
+                                }
+                            }
+                            
                             // For exe target: re-write the RBA config with updated _isync bat path
                             if target == "exe" {
                                 if let Some(rba) = get_receive_batch_action(&startup_abs) {
@@ -1016,25 +1034,26 @@ pub fn dotnet_run_start(
     let cmd_str = if target == "bat" {
         if let Some(bat_path_str) = actual_bat_path.as_ref().filter(|s| !s.trim().is_empty()) {
             let mut final_path = bat_path_str.clone();
-            let mut is_temp = false;
 
             if is_looks_like_batch_code(&final_path) && !Path::new(&final_path).exists() {
                 final_path = prepare_batch_temp_file(final_path)?;
-                is_temp = true;
                 if let Ok(mut guard) = state.0.lock() {
                     if !guard.temp_files.contains(&final_path) {
                         guard.temp_files.push(final_path.clone());
                     }
                 }
             } else if final_path.ends_with("_isync.bat") {
-                is_temp = true;
             }
 
-            let original_bat_path = std::path::Path::new(bat_path_str);
+let original_bat_path = std::path::Path::new(bat_path_str);
             let parent = original_bat_path.parent().and_then(|p| p.to_str()).unwrap_or("");
-
-            let cleanup = if is_temp {
-                format!("\r\nRemove-Item '{}' -Force -ErrorAction SilentlyContinue", final_path.replace('\'' , "''"))
+            let stem = original_bat_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let escaped_path = final_path.replace('\'', "''");
+            
+            // Delete _isync.bat when test finishes, but skip if app is running
+            let is_running = request.is_app_running.unwrap_or(false);
+            let cleanup = if final_path.ends_with("_isync.bat") && !stem.is_empty() && !is_running {
+                format!("\r\nRemove-Item '{}' -Force -ErrorAction SilentlyContinue", escaped_path)
             } else {
                 String::new()
             };
@@ -1068,10 +1087,13 @@ pub fn dotnet_run_start(
             cmd.push_str("chcp 932 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(932); ");
         }
 
+        // Build cleanup command for _isync.bat temp file (created by force_unicode)
+        let cleanup = String::new(); // Manual cleanup removed (relying on temp_files + stop)
+
         if run_args.is_empty() {
-            cmd.push_str(&format!("& '{}'\r\n", exe_path_to_run.display()));
+            cmd.push_str(&format!("& '{}'{}\r\n", exe_path_to_run.display(), cleanup));
         } else {
-            cmd.push_str(&format!("& '{}' {}\r\n", exe_path_to_run.display(), run_args));
+            cmd.push_str(&format!("& '{}' {}{}\r\n", exe_path_to_run.display(), run_args, cleanup));
         }
         cmd
     };
