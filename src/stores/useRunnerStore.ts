@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia';
+console.log('[Store] useRunnerStore.ts loading...');
 import { ref, computed, reactive, watch, nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { watch as fsWatch, exists } from '@tauri-apps/plugin-fs';
+import { watch as fsWatch, watchImmediate as fsWatchImmediate, exists } from '@tauri-apps/plugin-fs';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { toast } from 'vue-sonner';
@@ -65,6 +66,7 @@ export type EnvCheck = {
 };
 
 export const useRunnerStore = defineStore('runner', () => {
+  console.log('[Store] useRunnerStore defining...');
   const workspaceRoot = ref('');
   const projectRoot = ref('');
   const startupProject = ref('');
@@ -1287,6 +1289,39 @@ export const useRunnerStore = defineStore('runner', () => {
     }
   }
 
+  async function getSqlTables(): Promise<{ name: string; schema: string }[]> {
+    if (!sqlServer.value?.trim() || !sqlDatabase.value?.trim()) {
+      return [];
+    }
+    try {
+      const result = await invoke<{ name: string; schema: string }[]>('sql_get_tables', {
+        server: sqlServer.value,
+        database: sqlDatabase.value,
+        user: sqlUser.value || '',
+        password: sqlPassword.value || '',
+        useWindowsAuth: useWindowsAuth.value
+      });
+      return result;
+    } catch {
+      return [];
+    }
+  }
+
+  async function executeSqlQuery(sql: string): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> {
+    if (!sqlServer.value?.trim() || !sqlDatabase.value?.trim()) {
+      throw new Error('SQL Server/Database not configured');
+    }
+    const result = await invoke<{ columns: string[]; rows: Record<string, unknown>[] }>('sql_execute', {
+      server: sqlServer.value,
+      database: sqlDatabase.value,
+      user: sqlUser.value || '',
+      password: sqlPassword.value || '',
+      useWindowsAuth: useWindowsAuth.value,
+      sql
+    });
+    return result;
+  }
+
   async function runAllSqlSnippets() {
     if (!sqlServer.value?.trim()) {
       toast.error('Please enter SQL Server');
@@ -2041,45 +2076,97 @@ ${s.content}
   }
 
   async function setupBatWatcher() {
+    console.log('[BatWatcher] ===== setupBatWatcher START =====');
+    console.log('[BatWatcher] autoWatchTargetTest:', autoWatchTargetTest.value, 'autoWatchTargetRun:', autoWatchTargetRun.value);
+    console.log('[BatWatcher] batFilePath:', batFilePath.value);
+    console.log('[BatWatcher] batFiles:', batFiles.value);
+    
     if (unwatchBatFile) {
+      console.log('[BatWatcher] Cleaning up existing watcher');
       unwatchBatFile();
       unwatchBatFile = undefined;
     }
     
-    if (!autoWatchTargetTest.value && !autoWatchTargetRun.value) return;
+    if (!autoWatchTargetTest.value && !autoWatchTargetRun.value) {
+      console.log('[BatWatcher] Watch disabled, returning');
+      return;
+    }
     
     const filesToWatch = [batFilePath.value, ...(batFiles.value || [])].filter(b => b && b.trim());
-    if (filesToWatch.length === 0) return;
+    console.log('[BatWatcher] filesToWatch:', filesToWatch);
+    
+    if (filesToWatch.length === 0) {
+      console.log('[BatWatcher] No files to watch');
+      return;
+    }
 
-    const validFiles = await Promise.all(
-      filesToWatch.map(async (f) => {
-        const fileExists = await exists(f).catch(() => false);
-        return fileExists ? f : null;
-      })
-    ).then(results => results.filter((f): f is string => f !== null));
-
-    if (validFiles.length === 0) return;
-
-    try {
-      unwatchBatFile = await fsWatch(validFiles, (event: any) => {
-        const typeStr = JSON.stringify(event.type);
-        if (typeStr.includes('modify') || typeStr.includes('any')) {
-          if (autoWatchTargetTest.value && !loadingTarget.value && !buildStatus.value) {
-            uiStore.notify('BSN iSync', 'BAT file changed. Auto-running test...');
-            dotnet('run', 'bat');
-          } else if (autoWatchTargetRun.value && running.value && !loadingTarget.value && !buildStatus.value) {
-            uiStore.notify('BSN iSync', 'BAT file changed. Auto-restarting app...');
-            stop().then(() => {
-              setTimeout(() => {
-                dotnet('run', 'exe');
-              }, 1000);
-            });
+    const validFiles: string[] = [];
+    for (const f of filesToWatch) {
+      console.log('[BatWatcher] Checking file:', f);
+      try {
+        const fileExists = await exists(f);
+        console.log('[BatWatcher] exists (original path):', fileExists);
+        if (fileExists) {
+          validFiles.push(f);
+        } else {
+          const normalizedPath = f.replace(/\\/g, '/');
+          const normalizedExists = await exists(normalizedPath);
+          console.log('[BatWatcher] exists (normalized):', normalizedExists);
+          if (normalizedExists) {
+            validFiles.push(normalizedPath);
           }
         }
-      }, { delayMs: 500 });
-    } catch (e) {
-      console.error('Failed to watch bat files', e);
+      } catch (e) {
+        console.error('[BatWatcher] exists error:', e);
+      }
     }
+
+    console.log('[BatWatcher] validFiles:', validFiles);
+
+    if (validFiles.length === 0) {
+      console.log('[BatWatcher] No valid files to watch');
+      return;
+    }
+
+    console.log('[BatWatcher] Calling fsWatch with:', validFiles);
+    
+    try {
+      unwatchBatFile = await fsWatchImmediate(validFiles, (event: any) => {
+        console.log('[BatWatcher] ===== FILE CHANGE DETECTED (immediate) =====');
+        console.log('[BatWatcher] event:', JSON.stringify(event));
+        
+        const type = event?.type || event?.kind;
+        const paths = event?.paths || [];
+        console.log('[BatWatcher] type:', JSON.stringify(type), 'paths:', paths);
+        
+        const hasModify = type && (type.modify || type.any || type.create || type.remove);
+        console.log('[BatWatcher] hasModify:', hasModify);
+        
+        if (hasModify) {
+          const matchingPath = paths.find((p: string) => validFiles.some(vf => p.includes(vf)));
+          console.log('[BatWatcher] matchingPath:', matchingPath);
+          
+          if (matchingPath) {
+            console.log('[BatWatcher] Triggering auto-run, autoWatchTargetTest:', autoWatchTargetTest.value, 'loadingTarget:', loadingTarget.value, 'buildStatus:', buildStatus.value);
+            if (autoWatchTargetTest.value && !loadingTarget.value && !buildStatus.value) {
+              uiStore.notify('BSN iSync', 'BAT file changed. Auto-running test...');
+              dotnet('run', 'bat');
+            } else if (autoWatchTargetRun.value && running.value && !loadingTarget.value && !buildStatus.value) {
+              uiStore.notify('BSN iSync', 'BAT file changed. Auto-restarting app...');
+              stop().then(() => {
+                setTimeout(() => {
+                  dotnet('run', 'exe');
+                }, 1000);
+              });
+            }
+          }
+        }
+      }, { recursive: false });
+      console.log('[BatWatcher] fsWatch started, unwatchBatFile:', unwatchBatFile);
+    } catch (e) {
+      console.error('[BatWatcher] ERROR:', e);
+    }
+    console.log('[BatWatcher] ===== setupBatWatcher END =====');
   }
 
   async function saveUIState() {
@@ -2336,13 +2423,18 @@ ${s.content}
     localStorage.setItem('bsn_isync:global_watch_run', String(val));
   });
 
+console.log('[Store] useRunnerStore initializing');
+console.log('[Watch] registering watchers');
   watch(() => [autoWatchTargetTest.value, autoWatchTargetRun.value, batFilePath.value, batFiles.value], () => {
+    console.log('[Watch] batFilePath changed, calling setupBatWatcher');
     setupBatWatcher();
-  }, { deep: true });
+  }, { deep: true, immediate: true });
 
   watch(() => [autoWatchTargetTest.value, autoWatchTargetRun.value, startupProject.value], () => {
+    console.log('[Watch] startupProject changed, calling setupTargetWatcher');
     setupTargetWatcher();
-  }, { deep: true });
+  }, { deep: true, immediate: true });
+console.log('[Store] watchers registered');
 
   let sqlCheckTimeout: any;
 
@@ -2648,6 +2740,8 @@ ${s.content}
     browseBatFile,
     runSqlOnly,
     runAllSqlSnippets,
+    getSqlTables,
+    executeSqlQuery,
     onSnippetSelected,
     createNewSqlSnippet,
     renameActiveSqlSnippet,
@@ -2682,4 +2776,5 @@ ${s.content}
     unregisterAllShortcuts,
     resetAllShortcuts,
   };
+  console.log('[Store] useRunnerStore created successfully');
 });

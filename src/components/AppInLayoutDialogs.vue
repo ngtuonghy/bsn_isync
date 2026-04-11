@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Code2, Play, ListTree, X, Server, Database } from "lucide-vue-next";
+import { Code2, Play, ListTree, X, Square, Server, Database } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -89,7 +89,7 @@ const backlogStore = useBacklogStore();
     <!-- Professional Fullscreen SQL Editor Dialog -->
     <Dialog :open="uiStore.isSqlEditorFullscreen" @update:open="val => uiStore.isSqlEditorFullscreen = val">
       <DialogContent class="max-w-none! sm:max-w-none! w-[90vw]! h-[88vh] p-0 border-0 bg-transparent shadow-none overflow-hidden flex flex-col pointer-events-auto transition-all duration-500 [&>button]:hidden">
-        <div class="flex-1 bg-background/95 backdrop-blur-3xl border border-border shadow-[0_0_100px_rgba(0,0,0,0.2)] rounded-[24px] overflow-hidden flex flex-col ring-1 ring-black/5 dark:ring-white/10 animate-in zoom-in-95 duration-500">
+        <div class="flex-1 min-h-0 bg-background/95 backdrop-blur-3xl border border-border shadow-[0_0_100px_rgba(0,0,0,0.2)] rounded-[24px] overflow-hidden flex flex-col ring-1 ring-black/5 dark:ring-white/10 animate-in zoom-in-95 duration-500">
           <!-- Pro Toolbar Header (Theme Synced) -->
           <div class="h-14 px-6 border-b border-border bg-muted/20 flex items-center justify-between shrink-0">
             <!-- Left: Brand -->
@@ -137,13 +137,25 @@ const backlogStore = useBacklogStore();
 
             <!-- Right: Action Controls -->
             <div class="flex items-center gap-2">
-              <Button variant="ghost" class="h-9 px-4 text-[9px] font-black uppercase tracking-widest text-primary hover:bg-primary/5 transition-all rounded-lg border border-primary/20 bg-primary/5 group/run-all min-w-[110px]" @click="runnerStore.runAllSqlSnippets()" :disabled="runnerStore.sqlSnippets.length === 0">
-                <ListTree class="size-3.5 opacity-70 group-hover/run-all:scale-110 transition-transform mr-1.5" />
-                Run All
+              <Button v-if="!uiStore.isSqlRunning" class="h-9 px-5 text-[9px] font-black uppercase tracking-widest bg-primary hover:bg-primary/90 text-primary-foreground flex items-center gap-1.5 rounded-lg shadow-lg shadow-primary/10" @click="async () => {
+                if (!runnerStore.sqlSetupPath?.trim()) return;
+                uiStore.showSqlResult = true;
+                uiStore.isSqlRunning = true;
+                try {
+                  const result = await runnerStore.executeSqlQuery(runnerStore.sqlSetupPath);
+                  uiStore.sqlResultData = result;
+                } catch (e: any) {
+                  uiStore.sqlResultData = { columns: ['Error'], rows: [{ Error: String(e) }] };
+                } finally {
+                  uiStore.isSqlRunning = false;
+                }
+              }">
+                <Play class="size-3.5 fill-current" />
+                Run
               </Button>
-              <Button class="h-9 px-5 text-[9px] font-black uppercase tracking-widest bg-primary hover:bg-primary/90 text-primary-foreground flex items-center gap-1.5 rounded-lg group/run shadow-lg shadow-primary/10 min-w-[120px]" @click="runnerStore.runSqlOnly()" :disabled="runnerStore.sqlSnippets.length === 0">
-                <Play class="size-3.5 fill-current group-hover/run:scale-110 transition-transform" />
-                Run Script
+              <Button v-else variant="destructive" class="h-9 px-5 text-[9px] font-black uppercase tracking-widest flex items-center gap-1.5 rounded-lg" @click="uiStore.isSqlRunning = false">
+                <Square class="size-3.5 fill-current" />
+                Stop
               </Button>
               
               <div class="w-px h-6 bg-border mx-2"></div>
@@ -162,17 +174,30 @@ const backlogStore = useBacklogStore();
               height="100%"
               font-size="14px"
               placeholder="-- Write your SQL pro queries here..."
+              :is-fullscreen="uiStore.isSqlEditorFullscreen"
+              :show-result="uiStore.showSqlResult"
+              :result-data="uiStore.sqlResultData"
+              :is-running="uiStore.isSqlRunning"
+              @toggleResult="uiStore.showSqlResult = !uiStore.showSqlResult"
+              @execute="async () => {
+                if (!runnerStore.sqlSetupPath?.trim()) return;
+                uiStore.showSqlResult = true;
+                uiStore.isSqlRunning = true;
+                try {
+                  const result = await runnerStore.executeSqlQuery(runnerStore.sqlSetupPath);
+                  uiStore.sqlResultData = result;
+                } catch (e: any) {
+                  uiStore.sqlResultData = { columns: ['Error'], rows: [{ Error: String(e) }] };
+                } finally {
+                  uiStore.isSqlRunning = false;
+                }
+              }"
+              @stop="() => { uiStore.isSqlRunning = false; }"
               @change="(v: string) => { 
                  const s = runnerStore.sqlSnippets.find(s => s.id === runnerStore.activeSqlSnippetId);
                  if(s) s.content = v;
               }"
             />
-            
-            <!-- Floating Indicator -->
-            <div class="absolute bottom-6 left-6 flex items-center gap-2 bg-background/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-border shadow-sm opacity-60 hover:opacity-100 transition-opacity pointer-events-none">
-              <div class="size-2 rounded-full" :class="uiStore.isDarkMode ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-primary shadow-[0_0_8px_rgba(var(--primary),0.5)]'"></div>
-              <span class="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground/80">PRO Mode Active</span>
-            </div>
           </div>
         </div>
       </DialogContent>

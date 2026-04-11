@@ -25,6 +25,9 @@ export const useUiStore = defineStore('ui', () => {
   const namingSqlSnippetMode = ref<'create' | 'rename'>('create');
   const namingSqlSnippetValue = ref('');
   const isSqlEditorFullscreen = ref(false);
+  const showSqlResult = ref(false);
+  const sqlResultData = ref<{ columns: string[]; rows: Record<string, unknown>[] }>({ columns: [], rows: [] });
+  const isSqlRunning = ref(false);
   const isNamingArgSnippet = ref(false);
   const namingArgSnippetMode = ref<'create' | 'rename'>('create');
   const namingArgSnippetValue = ref('');
@@ -161,6 +164,9 @@ export const useUiStore = defineStore('ui', () => {
     namingSqlSnippetMode,
     namingSqlSnippetValue,
     isSqlEditorFullscreen,
+    showSqlResult,
+    sqlResultData,
+    isSqlRunning,
     isNamingArgSnippet,
     namingArgSnippetMode,
     namingArgSnippetValue,

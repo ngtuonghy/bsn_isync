@@ -5,6 +5,8 @@ mod updater;
 mod utils;
 mod terminal;
 mod runner;
+mod backlog_auth;
+mod sql_mod;
 
 pub use terminal::{init_pty, resize_pty, pty_write, MultiPtyState};
 pub use runner::{
@@ -22,8 +24,8 @@ pub use utils::{CommandResult, normalize_path, normalize_input_path, validate_st
     top_group_root, get_receive_batch_action, is_looks_like_batch_code, get_hostname_impl,
     resolve_output_exe_path, CREATE_NO_WINDOW};
 
-mod backlog_auth;
-pub use crate::backlog_auth::{get_backlog_auth_url, backlog_oauth_exchange, backlog_oauth_refresh, get_backlog_config};
+pub use backlog_auth::{get_backlog_auth_url, backlog_oauth_exchange, backlog_oauth_refresh, get_backlog_config};
+pub use sql_mod::{sql_get_tables, sql_execute, SqlTable, SqlQueryResult};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -99,7 +101,9 @@ pub fn run() {
             invalidate_build_fingerprint,
             updater::check_update,
             updater::download_and_install_update,
-            updater::restart_app
+            updater::restart_app,
+            sql_mod::sql_get_tables,
+            sql_mod::sql_execute
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

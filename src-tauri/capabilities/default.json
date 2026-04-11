@@ -70,6 +70,7 @@
     "fs:allow-write-text-file",
     "fs:write-all",
     "fs:write-files",
+    {"identifier":"fs:allow-exists","allow":[{"path":"**"}]},
     {"identifier":"fs:allow-watch","allow":[{"path":"**"}]},
     "fs:read-all"
   ]

@@ -726,6 +726,7 @@ onMounted(async () => {
                                 placeholder="-- Write SQL queries here..."
                                 height="260px"
                                 font-size="11px"
+                                :is-dark="uiStore.isDarkMode"
                                 :disabled="runnerStore.sqlSnippets.length === 0"
                                 @change="(v: string) => { 
                                    const s = runnerStore.sqlSnippets.find(s => s.id === runnerStore.activeSqlSnippetId);
