@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Code2, Play, ListTree, X, Square, Server, Database } from "lucide-vue-next";
+import { Code2, Play, X, Square, Server, Database } from "lucide-vue-next";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
