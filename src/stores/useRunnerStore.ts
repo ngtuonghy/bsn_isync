@@ -1326,7 +1326,7 @@ export const useRunnerStore = defineStore('runner', () => {
   }
 
   async function executeSqlQuery(sql: string): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> {
-    const result = await invoke<{ columns: string[]; rows: Record<string, unknown>[] }>('sql_execute', {
+    const result = await invoke<{ columns: string[]; rows: Record<string, unknown>[] }>('sql_execute_async', {
       server: sqlServer.value,
       database: sqlDatabase.value,
       user: useWindowsAuth.value ? '' : (sqlUser.value || ''),

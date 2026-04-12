@@ -25,7 +25,7 @@ pub use utils::{CommandResult, normalize_path, normalize_input_path, validate_st
     resolve_output_exe_path, CREATE_NO_WINDOW};
 
 pub use backlog_auth::{get_backlog_auth_url, backlog_oauth_exchange, backlog_oauth_refresh, get_backlog_config};
-pub use sql_mod::{sql_get_tables, sql_execute, SqlTable, SqlQueryResult};
+pub use sql_mod::{sql_get_tables, sql_execute_async, SqlTable, SqlQueryResult};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -103,7 +103,7 @@ pub fn run() {
             updater::download_and_install_update,
             updater::restart_app,
             sql_mod::sql_get_tables,
-            sql_mod::sql_execute
+            sql_mod::sql_execute_async
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

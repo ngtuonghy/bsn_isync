@@ -423,7 +423,7 @@ pub fn run_sql_setup_if_needed(
         }
     }
     
-    cmd.arg("-s,").arg("-W");
+    cmd.arg("-s,").arg("-W").arg("-t").arg("300");
     
     let temp_dir = std::env::temp_dir();
     let file_name = format!("bsn_isync_sql_{}.sql", std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
