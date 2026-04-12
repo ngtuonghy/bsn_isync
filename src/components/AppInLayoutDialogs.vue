@@ -199,8 +199,8 @@ const backlogStore = useBacklogStore();
                   
                   // Directly update in setupProfiles and save
                   const profile = runnerStore.setupProfiles?.find((p: any) => p.id === runnerStore.selectedSetupId);
-                  if(profile) {
-                    const snippetIdx = profile.sqlSnippets?.findIndex((s: any) => s.id === runnerStore.activeSqlSnippetId);
+                  if(profile && profile.sqlSnippets) {
+                    const snippetIdx = profile.sqlSnippets.findIndex((s: any) => s.id === runnerStore.activeSqlSnippetId);
                     if(snippetIdx >= 0) {
                       profile.sqlSnippets[snippetIdx].content = v;
                       profile.isLocalEdited = true;

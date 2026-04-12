@@ -5,6 +5,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
 import { keymap } from '@codemirror/view';
 import { computed, ref, watch, type Ref } from 'vue';
+import type { Extension } from '@codemirror/state';
 
 interface Props {
   modelValue: string;
