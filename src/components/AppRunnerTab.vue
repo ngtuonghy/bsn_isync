@@ -728,10 +728,33 @@ onMounted(async () => {
                                 font-size="11px"
                                 :is-dark="uiStore.isDarkMode"
                                 :disabled="runnerStore.sqlSnippets.length === 0"
+                                :show-result="uiStore.showSqlResult"
+                                :result-data="uiStore.sqlResultData"
+:is-running="uiStore.isSqlRunning"
+                                @toggleResult="uiStore.showSqlResult = !uiStore.showSqlResult"
                                 @change="(v: string) => { 
+                                   console.log('[SQL Editor] Change triggered, activeSqlSnippetId:', runnerStore.activeSqlSnippetId);
                                    const s = runnerStore.sqlSnippets.find(s => s.id === runnerStore.activeSqlSnippetId);
                                    if(s) s.content = v;
-                                }"
+                                   
+                                   // Directly update in setupProfiles and save
+                                   const profile = runnerStore.setupProfiles?.find((p: any) => p.id === runnerStore.selectedSetupId);
+                                   if(profile) {
+                                     const snippetIdx = profile.sqlSnippets?.findIndex((s: any) => s.id === runnerStore.activeSqlSnippetId);
+                                     if(snippetIdx >= 0) {
+                                       profile.sqlSnippets[snippetIdx].content = v;
+                                       profile.isLocalEdited = true;
+                                       profile.updatedAt = Date.now();
+                                       runnerStore.saveSetupsForCurrentRoot();
+                                       runnerStore.triggerSync(runnerStore.selectedSetupId);
+                                       console.log('[SQL Editor] Saved to profile, snippetIdx:', snippetIdx);
+                                     } else {
+                                       console.log('[SQL Editor] Snippet not found in profile sqlSnippets');
+                                     }
+                                   } else {
+                                     console.log('[SQL Editor] Profile not found');
+                                   }
+                               }"
                               />
                             </div>
                           </div>

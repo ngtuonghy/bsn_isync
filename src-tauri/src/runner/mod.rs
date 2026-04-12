@@ -423,28 +423,23 @@ pub fn run_sql_setup_if_needed(
         }
     }
     
-    let is_file = !input.contains('\n') && Path::new(input).exists();
-    let temp_path = if !is_file {
-        let temp_dir = std::env::temp_dir();
-        let file_name = format!("bsn_isync_sql_{}.sql", std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
-        let tp = temp_dir.join(file_name);
-        fs::write(&tp, input).map_err(|e| format!("Error creating temporary SQL file: {}", e))?;
-        Some(tp)
-    } else {
-        None
-    };
+    cmd.arg("-s,").arg("-W");
     
-    if let Some(ref tp) = temp_path {
-        cmd.arg("-i").arg(tp);
-    } else {
-        cmd.arg("-i").arg(normalize_input_path(input));
-    }
+    let temp_dir = std::env::temp_dir();
+    let file_name = format!("bsn_isync_sql_{}.sql", std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
+    let tp = temp_dir.join(file_name);
+    
+    // Write with UTF-8 BOM for proper encoding
+    let mut bom_content = Vec::with_capacity(input.len() + 3);
+    bom_content.extend_from_slice(b"\xEF\xBB\xBF");
+    bom_content.extend_from_slice(input.as_bytes());
+    fs::write(&tp, bom_content).map_err(|e| format!("Error creating temporary SQL file: {}", e))?;
+    
+    cmd.arg("-i").arg(&tp);
     
     let out = run_capture(cmd)?;
     
-    if let Some(tp) = temp_path {
-        let _ = fs::remove_file(tp);
-    }
+    let _ = fs::remove_file(tp);
     
     Ok(Some(out))
 }
@@ -915,6 +910,8 @@ pub fn dotnet_run_start(
                     if changed {
                         let file_stem = bat_path.file_stem().unwrap().to_string_lossy();
                         let new_bat_path = bat_path.with_file_name(format!("{}_isync.bat", file_stem));
+                        
+                        // Copy as-is without any encoding conversion
                         if fs::write(&new_bat_path, &new_content).is_ok() {
                             let new_bat_str = new_bat_path.to_string_lossy().to_string();
                             actual_bat_path = Some(new_bat_str.clone());

@@ -584,8 +584,12 @@ export const useRunnerStore = defineStore('runner', () => {
   }
 
   function saveCurrentToSelectedSetupProfile() {
+    console.log('[SaveProfile] saveCurrentToSelectedSetupProfile called, selectedSetupId:', selectedSetupId.value);
     const idx = setupProfiles.value.findIndex((x) => x.id === selectedSetupId.value);
-    if (idx < 0) return;
+    if (idx < 0) {
+      console.log('[SaveProfile] No profile found with id:', selectedSetupId.value);
+      return;
+    }
     
     const cleanObj = (obj: any) => {
       const res = { ...obj };
@@ -681,17 +685,25 @@ export const useRunnerStore = defineStore('runner', () => {
       return;
     }
     
+    aliasExeName.value = '';
+    runArgs.value = '';
+    exeArgs.value = '';
+    isExeTestMode.value = false;
+    sqlSetupPath.value = '';
+    configTemplate.value = '';
+    runConfigTemplate.value = '';
+    connectionStringTemplate.value = '';
     projectRoot.value = '';
     startupProject.value = '';
-    aliasExeName.value = '';
     batFilePath.value = '';
     batFiles.value = [];
     batFilesActiveArgIds.value = [];
     batFilesArgs.value = [];
-    runArgs.value = '';
-    exeArgs.value = '';
-    isExeTestMode.value = false;
     selectedProjectRoot.value = '';
+    activeRunArgId.value = '';
+    activeExeArgId.value = '';
+    selectedRunArgIds.value = [];
+    selectedExeArgIds.value = [];
     backlogIssueKey.value = '';
     backlogIssueSummary.value = '';
     backlogIssueTypeId.value = undefined;
@@ -840,12 +852,18 @@ export const useRunnerStore = defineStore('runner', () => {
     const selected = discoveredProjects.value.find((x) => x.root === selectedProjectRoot.value);
     if (!selected) return;
     
+    aliasExeName.value = '';
+    runArgs.value = '';
+    exeArgs.value = '';
+    sqlSetupPath.value = '';
+    isExeTestMode.value = false;
+    
     projectRoot.value = normalizePath(selected.root);
     if (selected.startupProject) {
       startupProject.value = selected.startupProject;
     }
 
-    if (!batFilePath.value && (selected as any).foundBat) {
+    if ((selected as any).foundBat) {
       const ws = workspaceRoot.value.replace(/[\\/]$/, '');
       batFilePath.value = normalizePath(`${ws}\\${(selected as any).foundBat}`);
       toast.info('Auto-discovered matching BAT file', { description: (selected as any).foundBat });
@@ -1264,28 +1282,28 @@ export const useRunnerStore = defineStore('runner', () => {
       toast.error('Please enter SQL Username/Password');
       return;
     }
-    if (!sqlSetupPath.value || !sqlSetupPath.value.trim()) {
+    
+    const activeSnippet = sqlSnippets.value.find(s => s.id === activeSqlSnippetId.value);
+    const sqlContent = activeSnippet?.content || sqlSetupPath.value;
+    
+    if (!sqlContent || !sqlContent.trim()) {
       toast.error('Missing SQL content', {
         description: 'Please enter SQL code directly in the box below.'
       });
       return;
     }
 
+    uiStore.showSqlResult = true;
+    uiStore.isSqlRunning = true;
+    uiStore.sqlResultData = { columns: [], rows: [] };
+    
     try {
-      const input = sqlSetupPath.value.trim();
-      if (!input) return;
-
-      let sqlPath = await invoke('prepare_sql_temp_file', { content: input }) as string;
-      let deleteCmd = `; del -Force "${sqlPath}"`;
-
-      let authParams = useWindowsAuth.value ? '-E' : `-U "${sqlUser.value}" -P "${sqlPassword.value}"`;
-      let cmd_str = `chcp 65001 > $null; sqlcmd -f 65001 -S "${sqlServer.value}" -d "${sqlDatabase.value}" ${authParams}`;
-      cmd_str += ` -i "${sqlPath}"${deleteCmd}\r\n`;
-
-      terminalStore.termState.active = 'main';
-      await invoke('pty_write', { id: 'main', data: cmd_str });
+      const result = await executeSqlQuery(sqlContent.trim());
+      uiStore.sqlResultData = result;
     } catch (e: any) {
-      toast.error(String(e));
+      uiStore.sqlResultData = { columns: ['Error'], rows: [{ Error: String(e) }] };
+    } finally {
+      uiStore.isSqlRunning = false;
     }
   }
 
@@ -1308,14 +1326,11 @@ export const useRunnerStore = defineStore('runner', () => {
   }
 
   async function executeSqlQuery(sql: string): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> {
-    if (!sqlServer.value?.trim() || !sqlDatabase.value?.trim()) {
-      throw new Error('SQL Server/Database not configured');
-    }
     const result = await invoke<{ columns: string[]; rows: Record<string, unknown>[] }>('sql_execute', {
       server: sqlServer.value,
       database: sqlDatabase.value,
-      user: sqlUser.value || '',
-      password: sqlPassword.value || '',
+      user: useWindowsAuth.value ? '' : (sqlUser.value || ''),
+      password: useWindowsAuth.value ? '' : (sqlPassword.value || ''),
       useWindowsAuth: useWindowsAuth.value,
       sql
     });
@@ -1355,19 +1370,17 @@ export const useRunnerStore = defineStore('runner', () => {
       return;
     }
 
+    uiStore.showSqlResult = true;
+    uiStore.isSqlRunning = true;
+    uiStore.sqlResultData = { columns: ['Status'], rows: [{ Status: 'Running all scripts...' }] };
+    
     try {
-      let sqlPath = await invoke('prepare_sql_temp_file', { content: combinedSql }) as string;
-      let deleteCmd = `; del -Force "${sqlPath}"`;
-
-      let authParams = useWindowsAuth.value ? '-E' : `-U "${sqlUser.value}" -P "${sqlPassword.value}"`;
-      let cmd_str = `chcp 65001 > $null; sqlcmd -f 65001 -S "${sqlServer.value}" -d "${sqlDatabase.value}" ${authParams}`;
-      cmd_str += ` -i "${sqlPath}"${deleteCmd}\r\n`;
-
-      terminalStore.termState.active = 'main';
-      await invoke('pty_write', { id: 'main', data: cmd_str });
-      toast.success('Executing All Scripts', { description: 'Check terminal for output.' });
+      const result = await executeSqlQuery(combinedSql);
+      uiStore.sqlResultData = result;
     } catch (e: any) {
-      toast.error('Execution failed', { description: String(e) });
+      uiStore.sqlResultData = { columns: ['Error'], rows: [{ Error: String(e) }] };
+    } finally {
+      uiStore.isSqlRunning = false;
     }
   }
 
@@ -2565,12 +2578,13 @@ console.log('[Store] watchers registered');
       projectRoot.value, startupProject.value, config.value, urls.value, aliasExeName.value,
       batFilePath.value, runArgs.value, exeArgs.value, isExeTestMode.value,
       sqlSetupPath.value, deployPath.value, backlogProjectKey.value, backlogIssueKey.value,
-      JSON.stringify(batFiles.value), JSON.stringify(sqlSnippets.value), JSON.stringify(runArgSnippets.value), JSON.stringify(exeArgSnippets.value)
+      JSON.stringify(batFiles.value), JSON.stringify(runArgSnippets.value), JSON.stringify(exeArgSnippets.value)
     ],
     () => {
       if (selectedSetupId.value && !isSavingProfile && !uiStore.isApplyingProfile) {
         isSavingProfile = true;
         saveCurrentToSelectedSetupProfile();
+        triggerSync(selectedSetupId.value);
         setTimeout(() => { isSavingProfile = false; }, 100);
       }
     },

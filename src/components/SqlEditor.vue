@@ -4,8 +4,7 @@ import { MySQL, PostgreSQL, MariaSQL, MSSQL } from '@codemirror/lang-sql';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
 import { keymap } from '@codemirror/view';
-import { computed, ref, type Ref } from 'vue';
-import { type Extension } from '@codemirror/state';
+import { computed, ref, watch, type Ref } from 'vue';
 
 interface Props {
   modelValue: string;
@@ -38,9 +37,20 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits(['update:modelValue', 'change', 'toggleResult', 'execute', 'stop']);
 
 const collapsed: Ref<boolean> = ref(false);
+
+// Auto expand when showResult becomes true
+watch(() => props.showResult, (newVal) => {
+  if (newVal && !props.isFullscreen) {
+    collapsed.value = false;
+  }
+});
 const resultHeightPercent = ref(40);
 const isDragging = ref(false);
-const editorHeight = computed(() => props.isFullscreen ? 'auto' : (collapsed.value ? '40px' : props.height));
+const editorHeight = computed(() => {
+  if (props.isFullscreen) return 'auto';
+  if (props.showResult && !collapsed.value) return '100px';
+  return props.height;
+});
 
 const editorContent = computed({
   get: () => props.modelValue,
@@ -120,7 +130,7 @@ function startDrag(e: MouseEvent) {
     <div v-if="collapsed && !isFullscreen" class="px-3 py-1 text-[10px] text-gray-400 truncate font-mono">{{ modelValue || placeholder }}</div>
     
     <!-- Result -->
-    <div v-if="showResult && (isFullscreen || !collapsed)" class="flex flex-col" :style="isFullscreen ? { flex: '1 1 auto', minHeight: '0' } : { height: resultHeightPercent + '%' }">
+    <div v-if="showResult && (isFullscreen || !collapsed)" class="flex flex-col overflow-hidden" :style="isFullscreen ? { flex: '1 1 auto', minHeight: '0' } : { flex: '1 1 auto', minHeight: '100px', maxHeight: '300px' }">
       <template v-if="resultData.rows.length > 0">
         <div class="h-1 bg-primary/20 cursor-row-resize hover:bg-primary/40 transition-colors shrink-0" :class="isFullscreen ? 'hidden' : ''" @mousedown="startDrag" />
         <div class="flex-1 overflow-auto min-h-0">
@@ -140,6 +150,9 @@ function startDrag(e: MouseEvent) {
           </table>
           <div class="px-3 py-1.5 text-[10px] text-gray-400 bg-primary/5 border-t border-primary/10">{{ resultData.rows.length }} rows returned</div>
         </div>
+      </template>
+      <template v-else-if="resultData.rows.length === 0 && resultData.columns.length > 0 && !resultData.columns.includes('Error')">
+        <div class="p-3 text-xs text-muted-foreground">No results returned</div>
       </template>
     </div>
     

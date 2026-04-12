@@ -192,11 +192,24 @@ const backlogStore = useBacklogStore();
                   uiStore.isSqlRunning = false;
                 }
               }"
-              @stop="() => { uiStore.isSqlRunning = false; }"
+@stop="() => { uiStore.isSqlRunning = false; }"
               @change="(v: string) => { 
-                 const s = runnerStore.sqlSnippets.find(s => s.id === runnerStore.activeSqlSnippetId);
-                 if(s) s.content = v;
-              }"
+                  const s = runnerStore.sqlSnippets.find(s => s.id === runnerStore.activeSqlSnippetId);
+                  if(s) s.content = v;
+                  
+                  // Directly update in setupProfiles and save
+                  const profile = runnerStore.setupProfiles?.find((p: any) => p.id === runnerStore.selectedSetupId);
+                  if(profile) {
+                    const snippetIdx = profile.sqlSnippets?.findIndex((s: any) => s.id === runnerStore.activeSqlSnippetId);
+                    if(snippetIdx >= 0) {
+                      profile.sqlSnippets[snippetIdx].content = v;
+                      profile.isLocalEdited = true;
+                      profile.updatedAt = Date.now();
+                      runnerStore.saveSetupsForCurrentRoot();
+                      runnerStore.triggerSync(runnerStore.selectedSetupId);
+                    }
+                  }
+               }"
             />
           </div>
         </div>
