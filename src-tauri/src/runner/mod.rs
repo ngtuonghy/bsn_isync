@@ -884,25 +884,34 @@ pub fn dotnet_run_start(
             let bat_path = Path::new(bat_str);
             if bat_path.exists() {
                 if let Ok(content_bytes) = fs::read(bat_path) {
-                    let target_bytes_tab = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \"\t\" -W -h -1 -o \"%I_PATH%\"";
-                    let target_bytes_space = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \" \" -W -h -1 -o \"%I_PATH%\"";
-                    let replace_bytes_tab = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \"\t\" -W -h -1 -f 932 -o \"%I_PATH%\"";
-                    let replace_bytes_space = b"SQLCMD -S %G_DB_SERVER% -U %G_DB_USER% -P %G_DB_PASS% -d %G_DB_NAME% -b -Q \"SET NOCOUNT ON; %QUERY%\" -s \" \" -W -h -1 -f 932 -o \"%I_PATH%\"";
-                    
-                    let mut new_content = Vec::with_capacity(content_bytes.len() + 50);
+                    let mut new_content = Vec::with_capacity(content_bytes.len() + 200);
                     let mut changed = false;
+                    
+                    let search_bytes = b"SQLCMD";
+                    let insert_bytes = b"-f 932";
+                    
+                    for byte in content_bytes.iter() {
+                        new_content.push(*byte);
+                    }
+                    
                     let mut i = 0;
-                    while i < content_bytes.len() {
-                        if i + target_bytes_tab.len() <= content_bytes.len() && &content_bytes[i..i+target_bytes_tab.len()] == target_bytes_tab {
-                            new_content.extend_from_slice(replace_bytes_tab);
-                            i += target_bytes_tab.len();
-                            changed = true;
-                        } else if i + target_bytes_space.len() <= content_bytes.len() && &content_bytes[i..i+target_bytes_space.len()] == target_bytes_space {
-                            new_content.extend_from_slice(replace_bytes_space);
-                            i += target_bytes_space.len();
-                            changed = true;
+                    while i + search_bytes.len() <= new_content.len() {
+                        if &new_content[i..i+search_bytes.len()] == search_bytes {
+                            let has_f932 = if i + search_bytes.len() + 1 < new_content.len() {
+                                let after = &new_content[i+search_bytes.len()..];
+                                after.starts_with(b" -f 932") || after.starts_with(b"\t-f 932")
+                            } else {
+                                false
+                            };
+                            
+                            if !has_f932 {
+                                new_content.splice(i+search_bytes.len()..i+search_bytes.len(), b" -f 932".to_vec());
+                                i += search_bytes.len() + 7;
+                                changed = true;
+                            } else {
+                                i += search_bytes.len();
+                            }
                         } else {
-                            new_content.push(content_bytes[i]);
                             i += 1;
                         }
                     }
