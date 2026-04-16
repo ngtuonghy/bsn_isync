@@ -21,6 +21,7 @@ export type ProjectProfile = {
   workspaceRoot?: string;
   projectRoot: string;
   startupProject: string;
+  targetProjects?: string[];
   buildConfig: string;
   urls: string;
   aliasExeName: string;
@@ -70,6 +71,7 @@ export const useRunnerStore = defineStore('runner', () => {
   const workspaceRoot = ref('');
   const projectRoot = ref('');
   const startupProject = ref('');
+  const targetProjects = ref<string[]>([]);
   const urls = ref('');
   const config = ref('Debug');
   const aliasExeName = ref('');
@@ -227,6 +229,25 @@ export const useRunnerStore = defineStore('runner', () => {
   const canBuild = computed(() => !running.value && projectRoot.value && startupProject.value);
   const canTest = computed(() => running.value || (projectRoot.value && startupProject.value && batFilePath.value));
   const canRun = computed(() => !running.value && projectRoot.value && startupProject.value && aliasExeName.value && batFilePath.value);
+  
+const getTargetProjectName = (targetProjectPath: string) => {
+    if (!targetProjectPath) return '';
+    // First try to find in discoveredProjects
+    if (discoveredProjects.value && discoveredProjects.value.length > 0) {
+      const found = discoveredProjects.value.find(p => {
+        if (!p.startupProject) return false;
+        const fullPath = p.root ? (p.root + '\\' + p.startupProject) : p.startupProject;
+        return targetProjectPath === fullPath ||
+               targetProjectPath === p.startupProject ||
+               targetProjectPath.endsWith('\\' + p.startupProject) ||
+               targetProjectPath.endsWith('/' + p.startupProject);
+      });
+      if (found) return found.name;
+    }
+    // Fallback: show the startup project name (without .csproj)
+    const cleanName = targetProjectPath.replace(/\.csproj$/i, '').split(/[\\/]/).pop() || '';
+    return cleanName || targetProjectPath;
+  };
   const canEditSelected = computed(() => {
     if (backlogStore.backlog.status !== 'success') return false;
     if (!selectedProfile.value) return false;
@@ -442,6 +463,7 @@ export const useRunnerStore = defineStore('runner', () => {
     projectRoot.value = normalizePath(toAbs(setup.projectRoot || ''));
     selectedProjectRoot.value = projectRoot.value;
     startupProject.value = setup.startupProject || '';
+    targetProjects.value = setup.targetProjects ? [...setup.targetProjects] : [];
     config.value = setup.buildConfig;
     urls.value = setup.urls || '';
     aliasExeName.value = setup.aliasExeName || '';
@@ -529,11 +551,12 @@ export const useRunnerStore = defineStore('runner', () => {
       
       setupProfiles.value = normalized;
       ensureVisibleSelection();
-      if (selectedSetupId.value) applySelectedSetupProfile();
       
       if (workspaceRoot.value) {
         await discoverProjects(true);
       }
+      
+      if (selectedSetupId.value) applySelectedSetupProfile();
 
       if (sqlServer.value && sqlDatabase.value) {
         setTimeout(() => backlogStore.checkSqlConnection(sqlServer.value, sqlDatabase.value, sqlSetupPath.value), 1000);
@@ -616,6 +639,7 @@ export const useRunnerStore = defineStore('runner', () => {
 
     setup.projectRoot = toRel(projectRoot.value);
     setup.startupProject = startupProject.value;
+    setup.targetProjects = targetProjects.value ? [...targetProjects.value].map(toRel) : [];
     setup.buildConfig = config.value === 'Release' ? 'Release' : 'Debug';
     setup.urls = urls.value;
     setup.aliasExeName = aliasExeName.value;
@@ -1006,20 +1030,42 @@ export const useRunnerStore = defineStore('runner', () => {
   }
 
   async function runDotnetAndCollect(mode: 'restore' | 'build') {
-    const projectPath = startupProject.value.replace(/\\/g, '/');
-    const lastSlash = projectPath.lastIndexOf('/');
-    const projectDir = lastSlash !== -1 
-      ? projectRoot.value + '\\' + startupProject.value.substring(0, lastSlash).replace(/\//g, '\\')
-      : projectRoot.value;
-    const projectFile = lastSlash !== -1
-      ? startupProject.value.substring(lastSlash + 1)
-      : startupProject.value;
+    const allProjects = [startupProject.value, ...(targetProjects.value || [])].filter(p => p && p.trim());
+    
+    for (let i = 0; i < allProjects.length; i++) {
+      const project = allProjects[i];
+      
+      const isAbsolute = /^[a-zA-Z]:\\/.test(project) || project.startsWith('/');
+      
+      let projectPath: string;
+      if (isAbsolute) {
+        projectPath = project;
+      } else if (project.includes('\\') || project.includes('/')) {
+        // Has subfolder - find the correct root folder
+        const projectFileName = project.split('\\').pop()?.split('/').pop();
+        
+        // Find by filename only
+        const discovered = discoveredProjects.value.find(d => 
+          d.startupProject === projectFileName ||
+          project.endsWith('\\' + d.startupProject) ||
+          project.endsWith('/' + d.startupProject)
+        );
+        
+        if (discovered && discovered.root) {
+          projectPath = discovered.root + '\\' + projectFileName;
+        } else {
+          projectPath = projectRoot.value + '\\' + project;
+        }
+      } else {
+        // Simple project name, use current projectRoot
+        projectPath = projectRoot.value + '\\' + project;
+      }
 
-    await invoke('pty_write', { id: 'main', data: `cd '${projectDir}'\r` });
-    const cmd = `dotnet ${mode} "${projectFile}" -c ${config.value}\r`;
-    await invoke('pty_write', { id: 'main', data: cmd });
-    if (mode === 'build') {
-      await invoke('invalidate_build_fingerprint').catch(() => {});
+      const cmd = `dotnet ${mode} "${projectPath}" -c ${config.value}\r`;
+      await invoke('pty_write', { id: 'main', data: cmd });
+      if (mode === 'build') {
+        await invoke('invalidate_build_fingerprint').catch(() => {});
+      }
     }
   }
 
@@ -1222,8 +1268,34 @@ export const useRunnerStore = defineStore('runner', () => {
       return;
     }
     try {
-      const cmd = `dotnet build "${startupProject.value}" -c ${config.value}\r`;
-      await invoke('pty_write', { id: 'main', data: cmd });
+      const allProjects = [startupProject.value, ...(targetProjects.value || [])].filter(p => p && p.trim());
+      for (let i = 0; i < allProjects.length; i++) {
+        const project = allProjects[i];
+        
+        const isAbsolute = /^[a-zA-Z]:\\/.test(project) || project.startsWith('/');
+        
+        let projectPath: string;
+        if (isAbsolute) {
+          projectPath = project;
+        } else {
+          const discovered = discoveredProjects.value.find(d => 
+            project === d.startupProject || 
+            project === d.root + '\\' + d.startupProject ||
+            project.endsWith('\\' + d.startupProject) ||
+            project.endsWith('/' + d.startupProject)
+          );
+          
+if (discovered && discovered.root) {
+             const projectFileName = project.split('\\').pop()?.split('/').pop();
+             projectPath = discovered.root + '\\' + projectFileName;
+           } else {
+             projectPath = projectRoot.value + '\\' + project;
+           }
+         }
+
+        const cmd = `dotnet build "${projectPath}" -c ${config.value}\r`;
+        await invoke('pty_write', { id: 'main', data: cmd });
+      }
       await invoke('invalidate_build_fingerprint').catch(() => {});
     } catch (e: any) {
       toast.error(String(e));
@@ -1537,6 +1609,20 @@ export const useRunnerStore = defineStore('runner', () => {
     } else if (activeBatConfigIndex.value > deletedIndex) {
       activeBatConfigIndex.value -= 1;
     }
+  }
+
+  async function browseTargetProject() {
+    const defaultDir = projectRoot.value || workspaceRoot.value;
+    const picked = await invoke('pick_file', { defaultPath: defaultDir, filters: [{ name: 'Project Files', extensions: ['csproj'] }] }) as string | null;
+    if (picked) {
+      if (!targetProjects.value) targetProjects.value = [];
+      targetProjects.value.push(picked);
+    }
+  }
+
+  function removeTargetProject(idx: number) {
+    if (!targetProjects.value) return;
+    targetProjects.value.splice(idx, 1);
   }
 
   function selectBacklogIssue(issue: any) {
@@ -2642,6 +2728,7 @@ console.log('[Store] watchers registered');
     workspaceRoot,
     projectRoot,
     startupProject,
+    targetProjects,
     urls,
     config,
     aliasExeName,
@@ -2691,6 +2778,7 @@ console.log('[Store] watchers registered');
     autoDeployConfig,
     deployPath,
     discoveredProjects,
+    getTargetProjectName,
     selectedProjectRoot,
     setupProfiles,
     selectedSetupId,
@@ -2766,6 +2854,8 @@ console.log('[Store] watchers registered');
     deleteActiveArgSnippet,
     onArgSnippetSelected,
     removeBatConfig,
+    browseTargetProject,
+    removeTargetProject,
     selectBacklogIssue,
     unlinkBacklogIssue,
     insertTimePlaceholder,

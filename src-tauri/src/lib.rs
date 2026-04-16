@@ -103,8 +103,8 @@ pub fn run() {
             updater::download_and_install_update,
             updater::restart_app,
             sql_mod::sql_get_tables,
-            sql_mod::sql_execute_async
-        ])
+            sql_mod::sql_execute_async, runner::dotnet_plain_command ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

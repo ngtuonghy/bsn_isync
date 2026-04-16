@@ -1410,3 +1410,26 @@ pub fn invalidate_build_fingerprint(
     guard.fingerprints.clear();
     Ok(())
 }
+
+#[tauri::command]
+pub fn dotnet_plain_command(mode: String, project_root: String, startup_project: String, build_config: Option<String>) -> Result<CommandResult, String> {
+    let root = normalize_input_path(&project_root);
+    let startup_abs = validate_startup_abs(&root, &startup_project)?;
+    let project_dir = startup_abs.parent().unwrap();
+    let startup_file = startup_abs.file_name().unwrap();
+
+    let mut cmd = new_command("dotnet");
+    cmd.current_dir(project_dir);
+    let md = mode.to_ascii_lowercase();
+    
+    if md == "restore" {
+        cmd.arg("restore").arg(startup_file);
+    } else if md == "build" {
+        let config = get_build_config(build_config.as_ref());
+        cmd.arg("build").arg(startup_file).arg("-c").arg(&config);
+    } else {
+        return Err("Invalid mode".to_string());
+    }
+    
+    run_capture(cmd)
+}

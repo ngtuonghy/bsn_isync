@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, Clock, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Settings2, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, FileDown, Monitor } from "lucide-vue-next";
+import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, Clock, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Settings2, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, FileDown, Monitor, Target } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -516,6 +516,55 @@ onMounted(async () => {
                                 </div>
                               </SelectContent>
                             </Select>
+                          </div>
+
+                          <div class="mt-2 pt-2 border-t border-dashed border-border/40">
+                            <div class="flex items-center justify-between mb-2">
+                              <Label class="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider flex items-center gap-1.5">
+                                <Target class="size-3 text-primary/60" />
+                                <span>Build Targets</span>
+                              </Label>
+                              <span v-if="runnerStore.targetProjects && runnerStore.targetProjects.length > 0" class="text-[9px] font-medium text-primary/70 bg-primary/5 px-1.5 py-0.5 rounded">{{ runnerStore.targetProjects.length }}</span>
+                            </div>
+                            
+                            <div class="space-y-1.5">
+                              <Select :model-value="''" @update:model-value="(val: any) => { if(val) { if(!runnerStore.targetProjects) runnerStore.targetProjects = []; const proj = runnerStore.discoveredProjects.find(p => p.root === val); if(proj && proj.startupProject) { const targetPath = val + '\\\\' + proj.startupProject; if(!runnerStore.targetProjects.includes(targetPath)) runnerStore.targetProjects.push(targetPath); } } }">
+                                <SelectTrigger class="w-full h-7 bg-background/50 border-dashed border-input hover:bg-background hover:border-primary/30 text-[11px] transition-all">
+                                  <SelectValue>
+                                    {{ runnerStore.targetProjects && runnerStore.targetProjects.length > 0 ? runnerStore.targetProjects.length + ' target(s)' : '+ Add target project' }}
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent class="p-1">
+                                  <div class="max-h-[180px] overflow-y-auto custom-scrollbar">
+                                    <SelectItem v-for="item in runnerStore.discoveredProjects.filter(p => p.startupProject !== runnerStore.startupProject)" :key="item.root" :value="item.root" class="text-[11px] py-1.5 px-2">
+                                      <div class="flex flex-col">
+                                        <span class="font-medium">{{ item.name }}</span>
+                                        <span class="text-[9px] text-muted-foreground/50">{{ item.root }}</span>
+                                      </div>
+                                    </SelectItem>
+                                    <div v-if="runnerStore.discoveredProjects.filter(p => p.startupProject !== runnerStore.startupProject).length === 0" class="px-2 py-3 text-[10px] text-muted-foreground/50 text-center italic">No other projects available</div>
+                                  </div>
+                                </SelectContent>
+                              </Select>
+                              
+                              <TransitionGroup name="list" tag="div" class="space-y-1">
+                                <div v-for="(_tp, idx) in runnerStore.targetProjects" :key="idx" class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border/30 bg-background/40 hover:bg-background hover:border-primary/20 transition-all">
+                                  <div class="size-5 rounded bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center border border-primary/10 shrink-0">
+                                    <Target class="size-2.5 text-primary/70" />
+                                  </div>
+                                  <div class="flex-1 min-w-0">
+                                    <div class="text-[11px] font-medium truncate">
+                                      {{ runnerStore.getTargetProjectName(runnerStore.targetProjects[idx]) }}
+                                    </div>
+                                  </div>
+                                  <Button variant="ghost" size="icon" class="h-5 w-5 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" @click.stop="runnerStore.removeTargetProject(idx)" title="Remove"><X class="size-3" /></Button>
+                                </div>
+                              </TransitionGroup>
+                              
+                              <div v-if="!runnerStore.targetProjects || runnerStore.targetProjects.length === 0" class="text-[10px] text-muted-foreground/40 italic text-center py-1">
+                                Startup project will be built
+                              </div>
+                            </div>
                           </div>
 
 
