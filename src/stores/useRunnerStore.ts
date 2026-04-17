@@ -53,6 +53,7 @@ export type ProjectProfile = {
   backlogIssueSummary?: string;
   targetConfigs?: Record<string, string>;
   deployPath?: string;
+  selectedBuildProjects?: string[];
   updatedAt: number;
   lastSyncedHash?: string;
   isLocalEdited?: boolean;
@@ -457,6 +458,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
       backlogIssueKey: backlogIssueKey.value,
       backlogIssueSummary: backlogIssueSummary.value,
       deployPath: toRel(deployPath.value),
+      selectedBuildProjects: [...selectedBuildProjects.value],
       sync: (() => {
         const { logs, ...syncData } = sync;
         return JSON.parse(JSON.stringify(syncData));
@@ -477,6 +479,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     selectedProjectRoot.value = projectRoot.value;
     startupProject.value = setup.startupProject || '';
     targetProjects.value = setup.targetProjects ? [...setup.targetProjects] : [];
+    selectedBuildProjects.value = new Set(setup.selectedBuildProjects || []);
     config.value = setup.buildConfig;
     urls.value = setup.urls || '';
     aliasExeName.value = setup.aliasExeName || '';
@@ -1057,18 +1060,10 @@ const getTargetProjectName = (targetProjectPath: string) => {
       }
     }
     
-    // Fallback: if nothing selected, build all
+    // If nothing selected, don't build anything
     if (allProjects.length === 0) {
-      for (const discovered of discoveredProjects.value) {
-        if (discovered.startupProject) {
-          allProjects.push({
-            project: discovered.startupProject,
-            root: discovered.root,
-            startup: discovered.startupProject,
-            config: targetConfigs.value?.[discovered.startupProject] || config.value
-          });
-        }
-      }
+      console.log('[build] No targets selected, skipping build');
+      return;
     }
     
     for (let i = 0; i < allProjects.length; i++) {
