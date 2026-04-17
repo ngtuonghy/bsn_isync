@@ -524,45 +524,90 @@ onMounted(async () => {
                                 <Target class="size-3 text-primary/60" />
                                 <span>Build Targets</span>
                               </Label>
-                              <span v-if="runnerStore.targetProjects && runnerStore.targetProjects.length > 0" class="text-[9px] font-medium text-primary/70 bg-primary/5 px-1.5 py-0.5 rounded">{{ runnerStore.targetProjects.length }}</span>
+                              <span class="text-[9px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">
+                                {{ runnerStore.selectedBuildProjects.size }} / {{ runnerStore.discoveredProjects.length }}
+                              </span>
                             </div>
                             
                             <div class="space-y-1.5">
-                              <Select :model-value="''" @update:model-value="(val: any) => { if(val) { if(!runnerStore.targetProjects) runnerStore.targetProjects = []; const proj = runnerStore.discoveredProjects.find(p => p.root === val); if(proj && proj.startupProject) { const targetPath = val + '\\\\' + proj.startupProject; if(!runnerStore.targetProjects.includes(targetPath)) runnerStore.targetProjects.push(targetPath); } } }">
+                              <Select>
                                 <SelectTrigger class="w-full h-7 bg-background/50 border-dashed border-input hover:bg-background hover:border-primary/30 text-[11px] transition-all">
                                   <SelectValue>
-                                    {{ runnerStore.targetProjects && runnerStore.targetProjects.length > 0 ? runnerStore.targetProjects.length + ' target(s)' : '+ Add target project' }}
+                                    {{ runnerStore.selectedBuildProjects.size > 0 
+                                      ? runnerStore.selectedBuildProjects.size + ' project(s) selected' 
+                                      : '+ Select build targets' }}
                                   </SelectValue>
                                 </SelectTrigger>
-                                <SelectContent class="p-1">
-                                  <div class="max-h-[180px] overflow-y-auto custom-scrollbar">
-                                    <SelectItem v-for="item in runnerStore.discoveredProjects.filter(p => p.startupProject !== runnerStore.startupProject)" :key="item.root" :value="item.root" class="text-[11px] py-1.5 px-2">
-                                      <div class="flex flex-col">
-                                        <span class="font-medium">{{ item.name }}</span>
-                                        <span class="text-[9px] text-muted-foreground/50">{{ item.root }}</span>
+                                <SelectContent class="p-0">
+                                  <div class="p-2 border-b border-border/30 space-y-1.5">
+                                    <div class="relative">
+                                      <Search class="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/50" />
+                                      <Input 
+                                        v-model="runnerStore.buildProjectSearch" 
+                                        placeholder="Search projects..."
+                                        class="h-7 text-[10px] pl-7 pr-8 bg-background/50"
+                                      />
+                                      <button 
+                                        v-if="runnerStore.buildProjectSearch"
+                                        class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground"
+                                        @click.stop="runnerStore.buildProjectSearch = ''"
+                                      >
+                                        <X class="size-3" />
+                                      </button>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                      <button 
+                                        v-if="runnerStore.filteredBuildProjects.length > 0"
+                                        class="text-[9px] font-medium text-primary hover:text-primary/80"
+                                        @click.stop="runnerStore.selectedBuildProjects.size === runnerStore.filteredBuildProjects.length ? runnerStore.selectedBuildProjects.clear() : runnerStore.selectedBuildProjects = new Set(runnerStore.filteredBuildProjects.map(p => p.root))"
+                                      >
+                                        {{ runnerStore.selectedBuildProjects.size === runnerStore.filteredBuildProjects.length ? 'Uncheck All' : 'Check All' }}
+                                      </button>
+                                      <span v-else></span>
+                                    </div>
+                                  </div>
+                                  <div class="max-h-[180px] overflow-y-auto custom-scrollbar p-1">
+                                    <div v-if="runnerStore.filteredBuildProjects.length === 0" class="px-2 py-3 text-[10px] text-muted-foreground/50 text-center italic">
+                                      No projects found
+                                    </div>
+                                    <div 
+                                      v-for="proj in runnerStore.filteredBuildProjects" 
+                                      :key="proj.root"
+                                      class="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer"
+                                      :class="runnerStore.selectedBuildProjects.has(proj.root) ? 'bg-primary/5' : ''"
+                                      @click="runnerStore.toggleBuildProject(proj.root)"
+                                    >
+                                      <div 
+                                        class="w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0"
+                                        :class="runnerStore.selectedBuildProjects.has(proj.root) 
+                                          ? 'bg-primary border-primary text-primary-foreground' 
+                                          : 'border-border/50 bg-background'"
+                                      >
+                                        <Check v-if="runnerStore.selectedBuildProjects.has(proj.root)" class="size-2.5" />
                                       </div>
-                                    </SelectItem>
-                                    <div v-if="runnerStore.discoveredProjects.filter(p => p.startupProject !== runnerStore.startupProject).length === 0" class="px-2 py-3 text-[10px] text-muted-foreground/50 text-center italic">No other projects available</div>
+                                      <div class="flex-1 min-w-0">
+                                        <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
+                                        <div class="text-[9px] text-muted-foreground/40 truncate">{{ proj.root }}</div>
+                                      </div>
+                                    </div>
                                   </div>
                                 </SelectContent>
                               </Select>
                               
                               <TransitionGroup name="list" tag="div" class="space-y-1">
-                                <div v-for="(_tp, idx) in runnerStore.targetProjects" :key="idx" class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border/30 bg-background/40 hover:bg-background hover:border-primary/20 transition-all">
-                                  <div class="size-5 rounded bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center border border-primary/10 shrink-0">
-                                    <Target class="size-2.5 text-primary/70" />
+                                <div v-for="proj in runnerStore.discoveredProjects.filter(p => runnerStore.selectedBuildProjects.has(p.root))" :key="proj.root" class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border/30 bg-background/40 hover:bg-background hover:border-primary/20 transition-all">
+                                  <div class="size-5 rounded bg-gradient-to-br from-green-500/10 to-green-500/5 flex items-center justify-center border border-green-500/20 shrink-0">
+                                    <Hammer class="size-2.5 text-green-600/70" />
                                   </div>
                                   <div class="flex-1 min-w-0">
-                                    <div class="text-[11px] font-medium truncate">
-                                      {{ runnerStore.getTargetProjectName(runnerStore.targetProjects[idx]) }}
-                                    </div>
+                                    <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
                                   </div>
-                                  <Button variant="ghost" size="icon" class="h-5 w-5 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" @click.stop="runnerStore.removeTargetProject(idx)" title="Remove"><X class="size-3" /></Button>
+                                  <Button variant="ghost" size="icon" class="h-5 w-5 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" @click.stop="runnerStore.toggleBuildProject(proj.root)" title="Remove"><X class="size-3" /></Button>
                                 </div>
                               </TransitionGroup>
                               
-                              <div v-if="!runnerStore.targetProjects || runnerStore.targetProjects.length === 0" class="text-[10px] text-muted-foreground/40 italic text-center py-1">
-                                Startup project will be built
+                              <div v-if="runnerStore.selectedBuildProjects.size === 0" class="text-[10px] text-muted-foreground/40 italic text-center py-1">
+                                No targets selected - all projects will be built
                               </div>
                             </div>
                           </div>

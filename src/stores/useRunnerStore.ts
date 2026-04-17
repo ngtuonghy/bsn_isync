@@ -180,6 +180,17 @@ export const useRunnerStore = defineStore('runner', () => {
   }>>([]);
 
   const selectedProjectRoot = ref('');
+  const selectedBuildProjects = ref<Set<string>>(new Set());
+  const buildProjectSearch = ref('');
+  const filteredBuildProjects = computed(() => {
+    const search = buildProjectSearch.value.toLowerCase().trim();
+    if (!search) return discoveredProjects.value;
+    return discoveredProjects.value.filter(p => 
+      p.name.toLowerCase().includes(search) || 
+      p.startupProject.toLowerCase().includes(search) ||
+      p.root.toLowerCase().includes(search)
+    );
+  });
   const setupProfiles = ref<ProjectProfile[]>([]);
   const selectedSetupId = ref('');
   const editableProfileName = ref('');
@@ -1032,28 +1043,54 @@ const getTargetProjectName = (targetProjectPath: string) => {
   }
 
   async function runDotnetAndCollect(mode: 'restore' | 'build') {
-    const allProjects = [startupProject.value, ...(targetProjects.value || [])].filter(p => p && p.trim());
+    const allProjects: { project: string; root: string; startup: string; config: string }[] = [];
+    
+    // Build only selected projects in checkbox
+    for (const discovered of discoveredProjects.value) {
+      if (discovered.startupProject && selectedBuildProjects.value.has(discovered.root)) {
+        allProjects.push({
+          project: discovered.startupProject,
+          root: discovered.root,
+          startup: discovered.startupProject,
+          config: targetConfigs.value?.[discovered.startupProject] || config.value
+        });
+      }
+    }
+    
+    // Fallback: if nothing selected, build all
+    if (allProjects.length === 0) {
+      for (const discovered of discoveredProjects.value) {
+        if (discovered.startupProject) {
+          allProjects.push({
+            project: discovered.startupProject,
+            root: discovered.root,
+            startup: discovered.startupProject,
+            config: targetConfigs.value?.[discovered.startupProject] || config.value
+          });
+        }
+      }
+    }
     
     for (let i = 0; i < allProjects.length; i++) {
-      const project = allProjects[i];
+      const proj = allProjects[i];
       
-      const isAbsolute = /^[a-zA-Z]:\\/.test(project) || project.startsWith('/');
+      const isAbsolute = /^[a-zA-Z]:\\/.test(proj.project) || proj.project.startsWith('/');
       
       let projectPath: string;
-      let targetProjectRoot = projectRoot.value;
-      let targetStartupProject = project;
-      let buildConfig: string = config.value;
+      let targetProjectRoot = proj.root;
+      let targetStartupProject = proj.startup;
+      let buildConfig: string = proj.config;
       
       if (isAbsolute) {
-        projectPath = project;
-        targetProjectRoot = project.substring(0, project.lastIndexOf('\\'));
-        targetStartupProject = project.split('\\').pop() || '';
-      } else if (project.includes('\\') || project.includes('/')) {
-        const projectFileName = project.split('\\').pop()?.split('/').pop();
+        projectPath = proj.project;
+        targetProjectRoot = projectPath.substring(0, projectPath.lastIndexOf('\\'));
+        targetStartupProject = projectPath.split('\\').pop() || '';
+      } else if (proj.project.includes('\\') || proj.project.includes('/')) {
+        const projectFileName = proj.project.split('\\').pop()?.split('/').pop();
         const discovered = discoveredProjects.value.find(d => 
           d.startupProject === projectFileName ||
-          project.endsWith('\\' + d.startupProject) ||
-          project.endsWith('/' + d.startupProject)
+          proj.project.endsWith('\\' + d.startupProject) ||
+          proj.project.endsWith('/' + d.startupProject)
         );
         
         if (discovered && discovered.root) {
@@ -1064,17 +1101,17 @@ const getTargetProjectName = (targetProjectPath: string) => {
             buildConfig = targetConfigs.value[projectFileName];
           }
         } else {
-          projectPath = projectRoot.value + '\\' + project;
-          targetStartupProject = project;
+          projectPath = projectRoot.value + '\\' + proj.project;
+          targetStartupProject = proj.project;
         }
       } else {
-        projectPath = projectRoot.value + '\\' + project;
-        if (targetConfigs.value && targetConfigs.value[project]) {
-          buildConfig = targetConfigs.value[project];
+        projectPath = proj.root + '\\' + proj.project;
+        if (targetConfigs.value && targetConfigs.value[proj.project]) {
+          buildConfig = targetConfigs.value[proj.project];
         }
       }
 
-      console.log(`[${mode}] Background execution for ${projectPath}...`);
+      console.log(`[${mode}] Building ${targetStartupProject} (${buildConfig}) in ${targetProjectRoot}...`);
       
       try {
         const result = await invoke<{ code: number, stdout: string, stderr: string }>('dotnet_plain_command', {
@@ -1141,6 +1178,10 @@ const getTargetProjectName = (targetProjectPath: string) => {
       loadingTarget.value = null;
       return;
     }
+    
+    // Build all projects before running (for both bat and exe targets)
+    await runDotnetAndCollect('build');
+    
     const isTestButton = cmd === 'run' && target === 'bat';
     const isExeTest = isTestButton && isExeTestMode.value;
     const actualTarget = isExeTest ? 'test_exe' : target;
@@ -1646,6 +1687,15 @@ const getTargetProjectName = (targetProjectPath: string) => {
   function removeTargetProject(idx: number) {
     if (!targetProjects.value) return;
     targetProjects.value.splice(idx, 1);
+  }
+
+  function toggleBuildProject(root: string) {
+    if (selectedBuildProjects.value.has(root)) {
+      selectedBuildProjects.value.delete(root);
+    } else {
+      selectedBuildProjects.value.add(root);
+    }
+    selectedBuildProjects.value = new Set(selectedBuildProjects.value);
   }
 
   function selectBacklogIssue(issue: any) {
@@ -2291,98 +2341,6 @@ ${s.content}
     console.log('[BatWatcher] ===== setupBatWatcher END =====');
   }
 
-  function buildSetupFromRunner(name: string): ProjectProfile {
-    const toRel = (p: string) => {
-      if (!p || !workspaceRoot.value) return p;
-      const ws = workspaceRoot.value.replace(/\\/g, '/').replace(/\/$/, '');
-      const normP = p.replace(/\\/g, '/');
-      if (normP.toLowerCase().startsWith(ws.toLowerCase())) {
-        const rel = normP.substring(ws.length).replace(/^\//, '');
-        return rel.replace(/\//g, '\\');
-      }
-      return p;
-    };
-    
-    return {
-      id: makeProfileId(),
-      name,
-      owner: currentUser.value,
-      projectRoot: toRel(projectRoot.value),
-      startupProject: startupProject.value,
-      targetProjects: (targetProjects.value || []).map(toRel),
-      targetConfigs: JSON.parse(JSON.stringify(targetConfigs.value || {})),
-      buildConfig: config.value === 'Release' ? 'Release' : 'Debug',
-      urls: urls.value,
-      aliasExeName: aliasExeName.value,
-      batFilePath: toRel(batFilePath.value),
-      batFiles: (batFiles.value || []).map(toRel),
-      batFilesActiveArgIds: [...(batFilesActiveArgIds.value || [])],
-      batFilesArgs: [...(batFilesArgs.value || [])],
-      runArgs: runArgs.value,
-      exeArgs: exeArgs.value,
-      isExeTestMode: isExeTestMode.value,
-      sqlSetupPath: sqlSetupPath.value,
-      sqlSnippets: JSON.parse(JSON.stringify(sqlSnippets.value || [])),
-      activeSqlSnippetId: activeSqlSnippetId.value,
-      runArgSnippets: (runArgSnippets.value || []).map((s: any) => ({ ...s, batPath: s.batPath ? toRel(s.batPath) : s.batPath })),
-      activeRunArgId: activeRunArgId.value,
-      selectedRunArgIds: [...(selectedRunArgIds.value || [])],
-      exeArgSnippets: (exeArgSnippets.value || []).map((s: any) => ({ ...s, batPath: s.batPath ? toRel(s.batPath) : s.batPath })),
-      activeExeArgId: activeExeArgId.value,
-      selectedExeArgIds: [...(selectedExeArgIds.value || [])],
-      sync: (() => {
-        const { logs: _l, ...d } = sync;
-        return JSON.parse(JSON.stringify(d));
-      })(),
-      backlogProjectKey: backlogProjectKey.value,
-      backlogIssueTypeId: backlogIssueTypeId.value,
-      backlogIssueKey: backlogIssueKey.value,
-      backlogIssueSummary: backlogIssueSummary.value,
-      deployPath: toRel(deployPath.value),
-      updatedAt: Date.now(),
-    };
-  }
-
-  function applySetupToRunner(data: ProjectProfile) {
-    const toAbs = (p: string) => {
-      if (!p || !workspaceRoot.value) return p;
-      if (/^[a-zA-Z]:\\/.test(p) || p.startsWith('/') || p.startsWith('\\\\')) return p;
-      return normalizePath(`${workspaceRoot.value}\\${p}`);
-    };
-
-    projectRoot.value = toAbs(data.projectRoot || '');
-    startupProject.value = data.startupProject || '';
-    targetProjects.value = (data.targetProjects || []).map(toAbs);
-    targetConfigs.value = data.targetConfigs || {};
-    urls.value = data.urls || '';
-    config.value = data.buildConfig || 'Debug';
-    aliasExeName.value = data.aliasExeName || '';
-    batFilePath.value = toAbs(data.batFilePath || '');
-    batFiles.value = (data.batFiles || []).map(toAbs);
-    batFilesActiveArgIds.value = [...(data.batFilesActiveArgIds || [])];
-    batFilesArgs.value = [...(data.batFilesArgs || [])];
-    runArgs.value = data.runArgs || '';
-    exeArgs.value = data.exeArgs || '';
-    isExeTestMode.value = !!data.isExeTestMode;
-    sqlSetupPath.value = data.sqlSetupPath || '';
-    sqlSnippets.value = JSON.parse(JSON.stringify(data.sqlSnippets || []));
-    activeSqlSnippetId.value = data.activeSqlSnippetId || '';
-    runArgSnippets.value = (data.runArgSnippets || []).map((s: any) => ({ ...s, batPath: s.batPath ? toAbs(s.batPath) : s.batPath }));
-    activeRunArgId.value = data.activeRunArgId || '';
-    selectedRunArgIds.value = [...(data.selectedRunArgIds || [])];
-    exeArgSnippets.value = (data.exeArgSnippets || []).map((s: any) => ({ ...s, batPath: s.batPath ? toAbs(s.batPath) : s.batPath }));
-    activeExeArgId.value = data.activeExeArgId || '';
-    selectedExeArgIds.value = [...(data.selectedExeArgIds || [])];
-    if (data.sync) {
-       Object.assign(sync, data.sync);
-    }
-    backlogProjectKey.value = data.backlogProjectKey || '';
-    backlogIssueTypeId.value = data.backlogIssueTypeId;
-    backlogIssueKey.value = data.backlogIssueKey || '';
-    backlogIssueSummary.value = data.backlogIssueSummary || '';
-    deployPath.value = toAbs(data.deployPath || '');
-  }
-
   async function saveUIState() {
     try {
       backlogStore.backlog.updatedAt = Date.now();
@@ -2896,6 +2854,10 @@ console.log('[Store] watchers registered');
     discoveredProjects,
     getTargetProjectName,
     selectedProjectRoot,
+    selectedBuildProjects,
+    toggleBuildProject,
+    buildProjectSearch,
+    filteredBuildProjects,
     setupProfiles,
     selectedSetupId,
     editableProfileName,
