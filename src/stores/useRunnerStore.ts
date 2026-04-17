@@ -51,6 +51,7 @@ export type ProjectProfile = {
   backlogIssueTypeId?: number;
   backlogIssueKey?: string;
   backlogIssueSummary?: string;
+  targetConfigs?: Record<string, string>;
   deployPath?: string;
   updatedAt: number;
   lastSyncedHash?: string;
@@ -72,6 +73,7 @@ export const useRunnerStore = defineStore('runner', () => {
   const projectRoot = ref('');
   const startupProject = ref('');
   const targetProjects = ref<string[]>([]);
+  const targetConfigs = ref<Record<string, string>>({});
   const urls = ref('');
   const config = ref('Debug');
   const aliasExeName = ref('');
@@ -668,6 +670,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     setup.backlogIssueKey = backlogIssueKey.value;
     setup.backlogIssueSummary = backlogIssueSummary.value;
     setup.deployPath = toRel(deployPath.value);
+    setup.targetConfigs = JSON.parse(JSON.stringify(targetConfigs.value || {}));
     
     const setupForCompare = { ...setup, updatedAt: setupProfiles.value[idx].updatedAt };
     const newSetupStr = JSON.stringify(cleanObj(setupForCompare), Object.keys(cleanObj(setupForCompare)).sort());
@@ -925,9 +928,9 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
   }
 
-  function applyConfigSyncToTemplates() {
-    if (loadingTarget.value) return;
-
+  function getSyncedTpl(tpl: string, isRunConfig = false) {
+    if (!tpl) return tpl;
+    
     let msmq = aliasExeName.value.replace(/\.exe$/i, '');
     const batIndex = activeBatConfigIndex.value || 0;
     const activeBatPath = batIndex === 0 ? batFilePath.value : (batFiles.value?.[batIndex - 1] || batFilePath.value);
@@ -935,97 +938,96 @@ const getTargetProjectName = (targetProjectPath: string) => {
       const m = activeBatPath.match(/([^\\]+)\.bat$/i);
       if (m) msmq = m[1];
     }
+
+    let t = tpl;
     
-    const syncTemplate = (tpl: string, isRunConfig = false) => {
-      if (!tpl) return tpl;
-      let t = tpl;
-      
-      if (connectionStringTemplate.value && connectionStringTemplate.value.trim()) {
-        const connStrSection = connectionStringTemplate.value.trim();
-        const sectionMatch = /<connectionStrings>[\s\S]*?<\/connectionStrings>/i;
-        if (sectionMatch.test(t)) {
-          t = t.replace(sectionMatch, connStrSection);
-        }
+    if (connectionStringTemplate.value && connectionStringTemplate.value.trim()) {
+      const connStrSection = connectionStringTemplate.value.trim();
+      const sectionMatch = /<connectionStrings>[\s\S]*?<\/connectionStrings>/i;
+      if (sectionMatch.test(t)) {
+        t = t.replace(sectionMatch, connStrSection);
       }
+    }
+    
+    t = t.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
+    
+    // For RUN CONFIG (EXE): use _isync bat path when forceUnicode is on
+    let batPathForConfig = activeBatPath || '.\\';
+    if (isRunConfig && forceUnicode.value && activeBatPath) {
+      batPathForConfig = activeBatPath.replace(/\.bat$/i, '_isync.bat');
+    }
+    t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${batPathForConfig}$3`);
+    
+    if (sqlServer.value) {
+      t = t.replace(/(<add\s+key="Report\.DBServer"\s+value=")([^"]*)("\s*\/>)/gi, `$1${sqlServer.value}$3`);
+    }
+
+    // Replace Execute.EnvId with dev environment value
+    t = t.replace(/(<add\s+key="Execute\.EnvId"\s+value=")([^"]*)("\s*\/>)/gi, `$1Arkbell_Dev$3`);
+
+    t = t.replace(new RegExp('(connectionString=")([^"]*)(")','gi'), (_match: string, pre: string, cs: string, post: string) => {
+      const parts = cs.split(';').map((p: string) => p.trim()).filter((p: string) => p.length > 0);
+      const kv: Record<string, string> = {};
+      const keyOrder: string[] = [];
       
-      t = t.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
-      
-      // For RUN CONFIG (EXE): use _isync bat path when forceUnicode is on
-      let batPathForConfig = activeBatPath || '.\\';
-      if (isRunConfig && forceUnicode.value && activeBatPath) {
-        batPathForConfig = activeBatPath.replace(/\.bat$/i, '_isync.bat');
-      }
-      t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${batPathForConfig}$3`);
-      
-      if (sqlServer.value) {
-        t = t.replace(/(<add\s+key="Report\.DBServer"\s+value=")([^"]*)("\s*\/>)/gi, `$1${sqlServer.value}$3`);
-      }
-
-      // Replace Execute.EnvId with dev environment value
-      t = t.replace(/(<add\s+key="Execute\.EnvId"\s+value=")([^"]*)("\s*\/>)/gi, `$1Arkbell_Dev$3`);
-
-      t = t.replace(new RegExp('(connectionString=")([^"]*)(")','gi'), (_match: string, pre: string, cs: string, post: string) => {
-        const parts = cs.split(';').map((p: string) => p.trim()).filter((p: string) => p.length > 0);
-        const kv: Record<string, string> = {};
-        const keyOrder: string[] = [];
-        
-        parts.forEach((p: string) => {
-          const eqIdx = p.indexOf('=');
-          if (eqIdx !== -1) {
-            const rawKey = p.substring(0, eqIdx).trim();
-            const val = p.substring(eqIdx + 1).trim();
-            const key = rawKey.toLowerCase();
-            kv[key] = val;
-            (kv as any)['orig_' + key] = rawKey;
-            keyOrder.push(key);
-          }
-        });
-
-        const setKey = (k: string, v: string) => {
-          const lk = k.toLowerCase();
-          if (!(lk in kv)) { keyOrder.push(lk); (kv as any)['orig_' + lk] = k; }
-          kv[lk] = v;
-        };
-
-        const removeKey = (k: string) => {
-          const lk = k.toLowerCase();
-          delete kv[lk];
-          const idx = keyOrder.indexOf(lk);
-          if (idx !== -1) keyOrder.splice(idx, 1);
-        };
-
-        if (sqlServer.value) {
-          if ('server' in kv) {
-            setKey('Server', sqlServer.value);
-            removeKey('Data Source');
-          } else {
-            setKey('Data Source', sqlServer.value);
-          }
+      parts.forEach((p: string) => {
+        const eqIdx = p.indexOf('=');
+        if (eqIdx !== -1) {
+          const rawKey = p.substring(0, eqIdx).trim();
+          const val = p.substring(eqIdx + 1).trim();
+          const key = rawKey.toLowerCase();
+          kv[key] = val;
+          (kv as any)['orig_' + key] = rawKey;
+          keyOrder.push(key);
         }
-        if (sqlDatabase.value) setKey('Initial Catalog', sqlDatabase.value);
-        
-        if (useWindowsAuth.value) {
-          setKey('Integrated Security', 'True');
-          removeKey('Trusted_Connection');
-          removeKey('TrustedConnection');
-          removeKey('User ID'); removeKey('Password'); removeKey('Uid'); removeKey('Pwd');
-        } else {
-          setKey('Integrated Security', 'False');
-          removeKey('Trusted_Connection');
-          removeKey('TrustedConnection');
-          if (sqlUser.value) { setKey('User ID', sqlUser.value); setKey('Password', sqlPassword.value || ''); }
-        }
-
-        const resCs = keyOrder.map(k => `${(kv as any)['orig_' + k] || k}=${kv[k]}`).join(';') + (keyOrder.length > 0 ? ';' : '');
-        return `${pre}${resCs}${post}`;
       });
 
-      return t;
-    };
+      const setKey = (k: string, v: string) => {
+        const lk = k.toLowerCase();
+        if (!(lk in kv)) { keyOrder.push(lk); (kv as any)['orig_' + lk] = k; }
+        kv[lk] = v;
+      };
 
-    const nConf = syncTemplate(configTemplate.value);
+      const removeKey = (k: string) => {
+        const lk = k.toLowerCase();
+        delete kv[lk];
+        const idx = keyOrder.indexOf(lk);
+        if (idx !== -1) keyOrder.splice(idx, 1);
+      };
+
+      if (sqlServer.value) {
+        if ('server' in kv) {
+          setKey('Server', sqlServer.value);
+          removeKey('Data Source');
+        } else {
+          setKey('Data Source', sqlServer.value);
+        }
+      }
+      if (sqlDatabase.value) setKey('Initial Catalog', sqlDatabase.value);
+      
+      if (useWindowsAuth.value) {
+        setKey('Integrated Security', 'True');
+        removeKey('Trusted_Connection');
+        removeKey('TrustedConnection');
+        removeKey('User ID'); removeKey('Password'); removeKey('Uid'); removeKey('Pwd');
+      } else {
+        setKey('Integrated Security', 'False');
+        removeKey('Trusted_Connection');
+        removeKey('TrustedConnection');
+        if (sqlUser.value) { setKey('User ID', sqlUser.value); setKey('Password', sqlPassword.value || ''); }
+      }
+
+      const resCs = keyOrder.map(k => `${(kv as any)['orig_' + k] || k}=${kv[k]}`).join(';') + (keyOrder.length > 0 ? ';' : '');
+      return `${pre}${resCs}${post}`;
+    });
+
+    return t;
+  }
+
+  function applyConfigSyncToTemplates() {
+    const nConf = getSyncedTpl(configTemplate.value);
     if (nConf !== configTemplate.value) configTemplate.value = nConf;
-    const nRun = syncTemplate(runConfigTemplate.value, true);
+    const nRun = getSyncedTpl(runConfigTemplate.value, true);
     if (nRun !== runConfigTemplate.value) runConfigTemplate.value = nRun;
   }
 
@@ -1038,13 +1040,16 @@ const getTargetProjectName = (targetProjectPath: string) => {
       const isAbsolute = /^[a-zA-Z]:\\/.test(project) || project.startsWith('/');
       
       let projectPath: string;
+      let targetProjectRoot = projectRoot.value;
+      let targetStartupProject = project;
+      let buildConfig: string = config.value;
+      
       if (isAbsolute) {
         projectPath = project;
+        targetProjectRoot = project.substring(0, project.lastIndexOf('\\'));
+        targetStartupProject = project.split('\\').pop() || '';
       } else if (project.includes('\\') || project.includes('/')) {
-        // Has subfolder - find the correct root folder
         const projectFileName = project.split('\\').pop()?.split('/').pop();
-        
-        // Find by filename only
         const discovered = discoveredProjects.value.find(d => 
           d.startupProject === projectFileName ||
           project.endsWith('\\' + d.startupProject) ||
@@ -1053,16 +1058,61 @@ const getTargetProjectName = (targetProjectPath: string) => {
         
         if (discovered && discovered.root) {
           projectPath = discovered.root + '\\' + projectFileName;
+          targetProjectRoot = discovered.root;
+          targetStartupProject = projectFileName || '';
+          if (projectFileName && targetConfigs.value && targetConfigs.value[projectFileName]) {
+            buildConfig = targetConfigs.value[projectFileName];
+          }
         } else {
           projectPath = projectRoot.value + '\\' + project;
+          targetStartupProject = project;
         }
       } else {
-        // Simple project name, use current projectRoot
         projectPath = projectRoot.value + '\\' + project;
+        if (targetConfigs.value && targetConfigs.value[project]) {
+          buildConfig = targetConfigs.value[project];
+        }
       }
 
-      const cmd = `dotnet ${mode} "${projectPath}" -c ${config.value}\r`;
-      await invoke('pty_write', { id: 'main', data: cmd });
+      console.log(`[${mode}] Background execution for ${projectPath}...`);
+      
+      try {
+        const result = await invoke<{ code: number, stdout: string, stderr: string }>('dotnet_plain_command', {
+          mode: mode,
+          projectRoot: targetProjectRoot,
+          startupProject: targetStartupProject,
+          buildConfig: buildConfig,
+        });
+
+        if (result.code !== 0) {
+           toast.error(`Background ${mode} failed for ${targetStartupProject}`, { description: result.stderr || result.stdout });
+           if (mode === 'build') continue;
+        }
+
+        if (mode === 'build') {
+          try {
+            const targetContent = await invoke<string>('fetch_project_config', {
+              projectRoot: targetProjectRoot,
+              startupProject: targetStartupProject,
+            });
+            
+            if (targetContent) {
+              const synced = getSyncedTpl(targetContent);
+              await invoke('write_project_config_output', {
+                projectPath: projectPath,
+                buildConfig: buildConfig,
+                content: synced,
+              });
+              console.log(`[build] Overwrote synced config for ${targetStartupProject}`);
+            }
+          } catch (configErr) {
+            console.warn(`[build] Failed to fetch/write config for ${targetStartupProject}`, configErr);
+          }
+        }
+      } catch (err: any) {
+        console.error(`[${mode}] Failed for ${targetStartupProject}:`, err);
+      }
+      
       if (mode === 'build') {
         await invoke('invalidate_build_fingerprint').catch(() => {});
       }
@@ -1268,35 +1318,8 @@ const getTargetProjectName = (targetProjectPath: string) => {
       return;
     }
     try {
-      const allProjects = [startupProject.value, ...(targetProjects.value || [])].filter(p => p && p.trim());
-      for (let i = 0; i < allProjects.length; i++) {
-        const project = allProjects[i];
-        
-        const isAbsolute = /^[a-zA-Z]:\\/.test(project) || project.startsWith('/');
-        
-        let projectPath: string;
-        if (isAbsolute) {
-          projectPath = project;
-        } else {
-          const discovered = discoveredProjects.value.find(d => 
-            project === d.startupProject || 
-            project === d.root + '\\' + d.startupProject ||
-            project.endsWith('\\' + d.startupProject) ||
-            project.endsWith('/' + d.startupProject)
-          );
-          
-if (discovered && discovered.root) {
-             const projectFileName = project.split('\\').pop()?.split('/').pop();
-             projectPath = discovered.root + '\\' + projectFileName;
-           } else {
-             projectPath = projectRoot.value + '\\' + project;
-           }
-         }
-
-        const cmd = `dotnet build "${projectPath}" -c ${config.value}\r`;
-        await invoke('pty_write', { id: 'main', data: cmd });
-      }
-      await invoke('invalidate_build_fingerprint').catch(() => {});
+      await runDotnetAndCollect('build');
+      toast.success('All projects rebuilt with synchronized configs!');
     } catch (e: any) {
       toast.error(String(e));
     } finally {
@@ -2268,6 +2291,98 @@ ${s.content}
     console.log('[BatWatcher] ===== setupBatWatcher END =====');
   }
 
+  function buildSetupFromRunner(name: string): ProjectProfile {
+    const toRel = (p: string) => {
+      if (!p || !workspaceRoot.value) return p;
+      const ws = workspaceRoot.value.replace(/\\/g, '/').replace(/\/$/, '');
+      const normP = p.replace(/\\/g, '/');
+      if (normP.toLowerCase().startsWith(ws.toLowerCase())) {
+        const rel = normP.substring(ws.length).replace(/^\//, '');
+        return rel.replace(/\//g, '\\');
+      }
+      return p;
+    };
+    
+    return {
+      id: makeProfileId(),
+      name,
+      owner: currentUser.value,
+      projectRoot: toRel(projectRoot.value),
+      startupProject: startupProject.value,
+      targetProjects: (targetProjects.value || []).map(toRel),
+      targetConfigs: JSON.parse(JSON.stringify(targetConfigs.value || {})),
+      buildConfig: config.value === 'Release' ? 'Release' : 'Debug',
+      urls: urls.value,
+      aliasExeName: aliasExeName.value,
+      batFilePath: toRel(batFilePath.value),
+      batFiles: (batFiles.value || []).map(toRel),
+      batFilesActiveArgIds: [...(batFilesActiveArgIds.value || [])],
+      batFilesArgs: [...(batFilesArgs.value || [])],
+      runArgs: runArgs.value,
+      exeArgs: exeArgs.value,
+      isExeTestMode: isExeTestMode.value,
+      sqlSetupPath: sqlSetupPath.value,
+      sqlSnippets: JSON.parse(JSON.stringify(sqlSnippets.value || [])),
+      activeSqlSnippetId: activeSqlSnippetId.value,
+      runArgSnippets: (runArgSnippets.value || []).map((s: any) => ({ ...s, batPath: s.batPath ? toRel(s.batPath) : s.batPath })),
+      activeRunArgId: activeRunArgId.value,
+      selectedRunArgIds: [...(selectedRunArgIds.value || [])],
+      exeArgSnippets: (exeArgSnippets.value || []).map((s: any) => ({ ...s, batPath: s.batPath ? toRel(s.batPath) : s.batPath })),
+      activeExeArgId: activeExeArgId.value,
+      selectedExeArgIds: [...(selectedExeArgIds.value || [])],
+      sync: (() => {
+        const { logs: _l, ...d } = sync;
+        return JSON.parse(JSON.stringify(d));
+      })(),
+      backlogProjectKey: backlogProjectKey.value,
+      backlogIssueTypeId: backlogIssueTypeId.value,
+      backlogIssueKey: backlogIssueKey.value,
+      backlogIssueSummary: backlogIssueSummary.value,
+      deployPath: toRel(deployPath.value),
+      updatedAt: Date.now(),
+    };
+  }
+
+  function applySetupToRunner(data: ProjectProfile) {
+    const toAbs = (p: string) => {
+      if (!p || !workspaceRoot.value) return p;
+      if (/^[a-zA-Z]:\\/.test(p) || p.startsWith('/') || p.startsWith('\\\\')) return p;
+      return normalizePath(`${workspaceRoot.value}\\${p}`);
+    };
+
+    projectRoot.value = toAbs(data.projectRoot || '');
+    startupProject.value = data.startupProject || '';
+    targetProjects.value = (data.targetProjects || []).map(toAbs);
+    targetConfigs.value = data.targetConfigs || {};
+    urls.value = data.urls || '';
+    config.value = data.buildConfig || 'Debug';
+    aliasExeName.value = data.aliasExeName || '';
+    batFilePath.value = toAbs(data.batFilePath || '');
+    batFiles.value = (data.batFiles || []).map(toAbs);
+    batFilesActiveArgIds.value = [...(data.batFilesActiveArgIds || [])];
+    batFilesArgs.value = [...(data.batFilesArgs || [])];
+    runArgs.value = data.runArgs || '';
+    exeArgs.value = data.exeArgs || '';
+    isExeTestMode.value = !!data.isExeTestMode;
+    sqlSetupPath.value = data.sqlSetupPath || '';
+    sqlSnippets.value = JSON.parse(JSON.stringify(data.sqlSnippets || []));
+    activeSqlSnippetId.value = data.activeSqlSnippetId || '';
+    runArgSnippets.value = (data.runArgSnippets || []).map((s: any) => ({ ...s, batPath: s.batPath ? toAbs(s.batPath) : s.batPath }));
+    activeRunArgId.value = data.activeRunArgId || '';
+    selectedRunArgIds.value = [...(data.selectedRunArgIds || [])];
+    exeArgSnippets.value = (data.exeArgSnippets || []).map((s: any) => ({ ...s, batPath: s.batPath ? toAbs(s.batPath) : s.batPath }));
+    activeExeArgId.value = data.activeExeArgId || '';
+    selectedExeArgIds.value = [...(data.selectedExeArgIds || [])];
+    if (data.sync) {
+       Object.assign(sync, data.sync);
+    }
+    backlogProjectKey.value = data.backlogProjectKey || '';
+    backlogIssueTypeId.value = data.backlogIssueTypeId;
+    backlogIssueKey.value = data.backlogIssueKey || '';
+    backlogIssueSummary.value = data.backlogIssueSummary || '';
+    deployPath.value = toAbs(data.deployPath || '');
+  }
+
   async function saveUIState() {
     try {
       backlogStore.backlog.updatedAt = Date.now();
@@ -2729,6 +2844,7 @@ console.log('[Store] watchers registered');
     projectRoot,
     startupProject,
     targetProjects,
+    targetConfigs,
     urls,
     config,
     aliasExeName,

@@ -130,7 +130,7 @@ pub async fn sql_get_tables(
     
     let result = tauri::async_runtime::spawn_blocking(move || {
         let query = "SELECT TABLE_NAME, TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME";
-        run_sql_query(&server, &database, &user, &password, true, query)
+        run_sql_query(&server, &database, &user, &password, use_windows_auth, query)
     }).await.map_err(|e| format!("Task error: {}", e))??;
     
     let tables: Vec<SqlTable> = result.rows.iter().map(|row| {

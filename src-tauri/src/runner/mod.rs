@@ -828,7 +828,7 @@ pub fn dotnet_run_start(
                 return Err(format!("Build failed, exit code {}", build_out.code));
             }
             
-            // Write configTemplate (TARGET CONFIG) to target project's OutputPath
+            // Write configTemplate (TARGET CONFIG) to startup project's OutputPath
             if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
                 match write_config_for_project(&startup_abs, &config, ct) {
                     Ok(msg) => { let _ = app.emit("runner-log", msg); },
@@ -1409,6 +1409,12 @@ pub fn invalidate_build_fingerprint(
     let mut guard = state.0.lock().map_err(|_| "State lock error".to_string())?;
     guard.fingerprints.clear();
     Ok(())
+}
+
+#[tauri::command]
+pub fn write_project_config_output(project_path: String, build_config: String, content: String) -> Result<String, String> {
+    let path = normalize_input_path(&project_path);
+    write_config_for_project(&path, &build_config, &content)
 }
 
 #[tauri::command]
