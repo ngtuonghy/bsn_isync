@@ -190,14 +190,17 @@ onMounted(async () => {
                       <div class="flex-1 overflow-y-auto px-2 pt-2 pb-4 space-y-2 custom-scrollbar">
                         <button v-for="setup in runnerStore.scopedProfiles" :key="setup.id"
                                 :disabled="runnerStore.running"
-                                class="w-full flex text-left rounded-xl p-3 transition-all duration-200 group/item relative border items-center gap-3 overflow-hidden shadow-sm"
+                                class="w-full flex text-left rounded-xl p-4 transition-all duration-300 group/item relative border items-center gap-4 overflow-hidden"
                                 :class="[
                                   setup.id === runnerStore.selectedSetupId 
-                                    ? 'bg-card border-primary/40 shadow-md ring-1 ring-primary/20 scale-[1.01] z-10' 
-                                    : 'bg-background/40 border-border/40 hover:bg-muted/60 hover:border-border/80 hover:shadow hover:scale-[1.005]',
+                                    ? 'bg-card border-primary/40 shadow-xl ring-1 ring-primary/20 scale-[1.02] z-10' 
+                                    : 'bg-background/40 border-border/40 hover:bg-muted/60 hover:border-border/80 hover:shadow-md hover:scale-[1.01]',
                                   runnerStore.running ? 'opacity-50 cursor-not-allowed' : ''
                                 ]"
                                 @click="runnerStore.selectedSetupId = setup.id">
+                                 
+                            <!-- Active Indicator -->
+                            <div v-if="setup.id === runnerStore.selectedSetupId" class="absolute left-0 top-3 bottom-3 w-1.5 bg-primary rounded-r-full shadow-[0_0_12px_rgba(var(--primary-rgb),0.6)] animate-in slide-in-from-left duration-300"></div>
                                  
                             <div class="flex-1 min-w-0 flex flex-col py-0.5">
                               <div class="flex items-start justify-between w-full mb-1 gap-2">
@@ -307,14 +310,14 @@ onMounted(async () => {
                           <template v-if="runnerStore.selectedProfile">
                             <div ref="uiStore.issueSearchContainerRef" class="relative group/identity flex flex-col pt-1 animate-in fade-in slide-in-from-top-2 duration-300">
                               <div class="flex items-center gap-2">
-                                <div class="relative flex-1 flex items-center bg-muted/20 border border-primary/5 shadow-inner-sm rounded-2xl px-3 transition-all focus-within:bg-background focus-within:border-primary/30 focus-within:shadow-md h-12"
+                                <div class="relative flex-1 flex items-center bg-muted/20 border border-primary/5 shadow-inner-sm rounded-2xl px-3.5 transition-all focus-within:bg-background focus-within:border-primary/30 focus-within:shadow-md h-11"
                                      :class="[!uiStore.isNamingSqlSnippet ? 'ring-primary/5' : '']">
-                                  <Search class="size-4 text-muted-foreground/30 mr-2 shrink-0 group-focus-within/identity:text-primary transition-colors" />
+                                  <Pencil class="size-4 text-muted-foreground/30 mr-2.5 shrink-0 group-focus-within/identity:text-primary transition-colors" />
                                   <Input 
                                     ref="uiStore.profileNameInput" 
                                     v-model="runnerStore.editableProfileName" 
-                                    class="font-black h-full border-0 bg-transparent focus-visible:ring-0 px-0 transition-all text-lg flex-1 min-w-0 cursor-text shadow-none" 
-                                    placeholder="Profile name or search issue..."
+                                    class="font-bold h-full border-0 bg-transparent focus-visible:ring-0 px-0 transition-all text-[15px] flex-1 min-w-0 cursor-text shadow-none" 
+                                    placeholder="Enter profile name (e.g. SKSE001)..."
                                     @focus="() => { if (!runnerStore.preventAutoSearch) uiStore.isIssueSearchVisible = true; }"
                                     @input="uiStore.isIssueSearchVisible = true"
                                     @blur="runnerStore.commitProfileName"
@@ -493,7 +496,7 @@ onMounted(async () => {
                                 
                                 <div class="space-y-1.5">
                                   <Select>
-                                    <SelectTrigger class="w-full h-7 bg-background/50 border-dashed border-input hover:bg-background hover:border-primary/30 text-[11px] transition-all">
+                                    <SelectTrigger class="w-full h-11 bg-background/50 border-input hover:bg-background hover:border-primary/40 hover:shadow-md text-xs font-bold transition-all px-4 rounded-xl shadow-sm">
                                       <SelectValue>
                                         {{ runnerStore.selectedBuildProjects.size > 0 
                                           ? runnerStore.selectedBuildProjects.size + ' project(s) selected' 
@@ -542,12 +545,12 @@ onMounted(async () => {
                                           <div 
                                             v-for="proj in runnerStore.filteredBuildProjects" 
                                             :key="proj.root"
-                                            class="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer"
+                                            class="group flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-primary/5 cursor-pointer transition-all"
                                             :class="runnerStore.selectedBuildProjects.has(proj.root) ? 'bg-primary/5' : ''"
                                             @click="runnerStore.toggleBuildProject(proj.root)"
                                           >
                                             <div 
-                                              class="w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0"
+                                              class="w-5 h-5 rounded-md border flex items-center justify-center transition-all shrink-0 shadow-sm"
                                               :class="runnerStore.selectedBuildProjects.has(proj.root) 
                                                 ? 'bg-primary border-primary text-primary-foreground' 
                                                 : 'border-border/50 bg-background'"
@@ -556,7 +559,7 @@ onMounted(async () => {
                                             </div>
                                             <div class="flex-1 min-w-0">
                                               <div class="flex items-center gap-1.5">
-                                                <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
+                                                <div class="text-[12px] font-bold truncate text-foreground/80 group-hover:text-primary transition-colors">{{ proj.name }}</div>
                                               </div>
                                             </div>
                                           </div>
@@ -603,7 +606,7 @@ onMounted(async () => {
                                       </TooltipProvider>
     
                                       <div class="flex-1 min-w-0 ml-1">
-                                        <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
+                                        <div class="text-[12px] font-bold truncate text-foreground/80 group-hover:text-primary transition-colors">{{ proj.name }}</div>
                                       </div>
                                       <Button variant="ghost" size="icon" class="h-5 w-5 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" @click.stop="runnerStore.toggleBuildProject(proj.root)" title="Remove"><X class="size-3" /></Button>
                                     </div>
