@@ -180,8 +180,9 @@ export const useRunnerStore = defineStore('runner', () => {
     csprojCount: number;
   }>>([]);
 
-  const selectedProjectRoot = ref('');
+
   const selectedBuildProjects = ref<Set<string>>(new Set());
+  const projectSyncStates = ref<Record<string, 'synced' | 'mismatch' | 'missing'>>({});
   const buildProjectSearch = ref('');
   const filteredBuildProjects = computed(() => {
     const search = buildProjectSearch.value.toLowerCase().trim();
@@ -476,7 +477,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     };
 
     projectRoot.value = normalizePath(toAbs(setup.projectRoot || ''));
-    selectedProjectRoot.value = projectRoot.value;
+    // selectedProjectRoot removed
     startupProject.value = setup.startupProject || '';
     targetProjects.value = setup.targetProjects ? [...setup.targetProjects] : [];
     selectedBuildProjects.value = new Set(setup.selectedBuildProjects || []);
@@ -492,6 +493,12 @@ const getTargetProjectName = (targetProjectPath: string) => {
     isExeTestMode.value = setup.isExeTestMode || false;
     deployPath.value = toAbs(setup.deployPath || '');
     sqlSetupPath.value = setup.sqlSetupPath || '';
+    
+    // Restore side effects of project selection
+    if (projectRoot.value) {
+      invoke('pty_write', { id: 'main', data: `cd '${projectRoot.value}'\r` }).catch(() => {});
+      loadConfigsForCurrentProject();
+    }
 
     if (setup.sqlSnippets && Array.isArray(setup.sqlSnippets)) {
       sqlSnippets.value = JSON.parse(JSON.stringify(setup.sqlSnippets));
@@ -633,7 +640,11 @@ const getTargetProjectName = (targetProjectPath: string) => {
     const cleanObj = (obj: any) => {
       const res = { ...obj };
       for (const key in res) {
-        if (res[key] === null || res[key] === undefined || (Array.isArray(res[key]) && res[key].length === 0) || res[key] === '') {
+        if (res[key] === null || res[key] === undefined || res[key] === '') {
+          delete res[key];
+        }
+        // Special case: don't delete empty arrays for certain fields because unchecking all targets IS a change
+        if (Array.isArray(res[key]) && res[key].length === 0 && !['selectedBuildProjects', 'targetConfigs', 'targetProjects', 'batFiles'].includes(key)) {
           delete res[key];
         }
       }
@@ -685,6 +696,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     setup.backlogIssueSummary = backlogIssueSummary.value;
     setup.deployPath = toRel(deployPath.value);
     setup.targetConfigs = JSON.parse(JSON.stringify(targetConfigs.value || {}));
+    setup.selectedBuildProjects = [...selectedBuildProjects.value];
     
     const setupForCompare = { ...setup, updatedAt: setupProfiles.value[idx].updatedAt };
     const newSetupStr = JSON.stringify(cleanObj(setupForCompare), Object.keys(cleanObj(setupForCompare)).sort());
@@ -740,7 +752,6 @@ const getTargetProjectName = (targetProjectPath: string) => {
     batFiles.value = [];
     batFilesActiveArgIds.value = [];
     batFilesArgs.value = [];
-    selectedProjectRoot.value = '';
     activeRunArgId.value = '';
     activeExeArgId.value = '';
     selectedRunArgIds.value = [];
@@ -880,8 +891,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
       
       if (autoSelect && discoveredProjects.value.length > 0) {
         if (!projectRoot.value) {
-          selectedProjectRoot.value = discoveredProjects.value[0].root;
-          applySelectedProject();
+          // Auto-selection of projectRoot removed from UI flow
         }
       }
     } catch (e: any) {
@@ -889,30 +899,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
   }
 
-  function applySelectedProject() {
-    const selected = discoveredProjects.value.find((x) => x.root === selectedProjectRoot.value);
-    if (!selected) return;
-    
-    aliasExeName.value = '';
-    runArgs.value = '';
-    exeArgs.value = '';
-    sqlSetupPath.value = '';
-    isExeTestMode.value = false;
-    
-    projectRoot.value = normalizePath(selected.root);
-    if (selected.startupProject) {
-      startupProject.value = selected.startupProject;
-    }
 
-    if ((selected as any).foundBat) {
-      const ws = workspaceRoot.value.replace(/[\\/]$/, '');
-      batFilePath.value = normalizePath(`${ws}\\${(selected as any).foundBat}`);
-      toast.info('Auto-discovered matching BAT file', { description: (selected as any).foundBat });
-    }
-    
-    invoke('pty_write', { id: 'main', data: `cd '${projectRoot.value}'\r` }).catch(() => {});
-    loadConfigsForCurrentProject();
-  }
 
   async function loadConfigsForCurrentProject() {
     if (!projectRoot.value || !startupProject.value) return;
@@ -1117,8 +1104,10 @@ const getTargetProjectName = (targetProjectPath: string) => {
         });
 
         if (result.code !== 0) {
-           toast.error(`Background ${mode} failed for ${targetStartupProject}`, { description: result.stderr || result.stdout });
+           toast.error(`Build failed for ${targetStartupProject}`, { description: result.stderr || result.stdout });
            if (mode === 'build') continue;
+        } else {
+          console.log(`[${mode}] ${targetStartupProject} built successfully`);
         }
 
         if (mode === 'build') {
@@ -1149,7 +1138,50 @@ const getTargetProjectName = (targetProjectPath: string) => {
         await invoke('invalidate_build_fingerprint').catch(() => {});
       }
     }
+    
+    await checkProjectSyncs();
   }
+
+  async function checkProjectSyncs() {
+    if (!projectRoot.value) return;
+    
+    const targets = discoveredProjects.value.filter(p => selectedBuildProjects.value.has(p.root));
+    if (targets.length === 0) return;
+
+    console.log('[RunnerStore] checkProjectSyncs for', targets.length, 'projects');
+    const expectedCs = `Data Source=${sqlServer.value};Initial Catalog=${sqlDatabase.value}`;
+    console.log('[RunnerStore] Expected CS snippet:', expectedCs);
+
+    for (const proj of targets) {
+      try {
+        console.log('[RunnerStore] Verifying project:', proj.name, 'root:', proj.root);
+        const state = await invoke<string>('verify_debug_output_sync', {
+          projectRoot: workspaceRoot.value, // Use workspace root to include sibling projects
+          startupProject: proj.root,
+          expectedCs: expectedCs
+        }).catch(err => {
+           console.error(`[SyncCheck] RPC Error for ${proj.name}:`, err);
+           return 'missing'; // Fallback to gray if logic fails
+        });
+        
+        console.log(`[RunnerStore] Result for ${proj.name}:`, state);
+        projectSyncStates.value[proj.root] = state as any;
+      } catch (e) {
+        console.error('[SyncCheck] Outer catch failed for', proj.name, e);
+      }
+    }
+  }
+
+  // Automatic verification on selection change or SQL change
+  watch(
+    [() => Array.from(selectedBuildProjects.value), () => sqlServer.value, () => sqlDatabase.value],
+    () => {
+      if (selectedBuildProjects.value.size > 0) {
+        void checkProjectSyncs();
+      }
+    },
+    { immediate: true }
+  );
 
   async function dotnet(cmd: 'restore' | 'build' | 'run', target: 'exe' | 'bat' = 'exe', overrideArgs?: string) {
     const loadingKey = cmd === 'run' ? target : cmd;
@@ -2732,7 +2764,8 @@ console.log('[Store] watchers registered');
       projectRoot.value, startupProject.value, config.value, urls.value, aliasExeName.value,
       batFilePath.value, runArgs.value, exeArgs.value, isExeTestMode.value,
       sqlSetupPath.value, deployPath.value, backlogProjectKey.value, backlogIssueKey.value,
-      JSON.stringify(batFiles.value), JSON.stringify(runArgSnippets.value), JSON.stringify(exeArgSnippets.value)
+      JSON.stringify(batFiles.value), JSON.stringify(runArgSnippets.value), JSON.stringify(exeArgSnippets.value),
+      JSON.stringify(Array.from(selectedBuildProjects.value || [])), JSON.stringify(targetConfigs.value || {})
     ],
     () => {
       if (selectedSetupId.value && !isSavingProfile && !uiStore.isApplyingProfile) {
@@ -2848,8 +2881,10 @@ console.log('[Store] watchers registered');
     deployPath,
     discoveredProjects,
     getTargetProjectName,
-    selectedProjectRoot,
+
     selectedBuildProjects,
+    projectSyncStates,
+    checkProjectSyncs,
     toggleBuildProject,
     buildProjectSearch,
     filteredBuildProjects,
@@ -2905,7 +2940,7 @@ console.log('[Store] watchers registered');
     resolveArgs,
     pickProjectFolder,
     discoverProjects,
-    applySelectedProject,
+
     loadConfigsForCurrentProject,
     applyConfigSyncToTemplates,
     runDotnetAndCollect,

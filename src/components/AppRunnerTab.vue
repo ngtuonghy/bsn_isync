@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, Clock, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Settings2, Code2, ListTree, Layers, FilePlus2, AppWindow, TerminalSquare, FileDown, Monitor, Target } from "lucide-vue-next";
+import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, Clock, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Code2, ListTree, Layers, FilePlus2, TerminalSquare, FileDown, Monitor, Target, Check, Settings2 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,20 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
+
 import SqlEditor from "@/components/SqlEditor.vue";
 import {
   Tooltip,
@@ -33,6 +20,20 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import HotkeyLabel from "@/components/HotkeyLabel.vue";
 import { useUiStore } from '@/stores/useUiStore';
@@ -223,18 +224,7 @@ onMounted(async () => {
                                   {{ setup.backlogIssueKey }}
                                 </div>
                                 
-                                <div class="flex items-center gap-1.5 overflow-hidden max-w-full">
-                                  <FolderOpen class="size-3 text-muted-foreground/50 group-hover/item:text-primary/60 transition-colors shrink-0" />
-                                  <div class="text-[11px] text-muted-foreground truncate font-medium opacity-80 group-hover/item:opacity-100 transition-opacity">
-                                    {{ (() => {
-                                      const ws = (runnerStore.workspaceRoot || "").replace(/[\\/]$/, "");
-                                      const fullRoot = setup.projectRoot ? `${ws}\\${setup.projectRoot}` : "";
-                                      const normFull = fullRoot.replace(/\//g, "\\").toLowerCase();
-                                      const found = runnerStore.discoveredProjects.find(p => (p.root || "").replace(/\//g, "\\").toLowerCase() === normFull);
-                                      return found?.name || setup.projectRoot?.split('\\').pop() || "No project selected";
-                                    })() }}
-                                  </div>
-                                </div>
+
                               </div>
                             </div>
                         </button>
@@ -311,24 +301,26 @@ onMounted(async () => {
                             </Button>
                           </div>
                         </div>
+                      </div>
 
-                        <div class="min-w-0 flex-1 relative">
+                         <div class="min-w-0 flex-1 relative px-0.5">
                           <template v-if="runnerStore.selectedProfile">
                             <div ref="uiStore.issueSearchContainerRef" class="relative group/identity flex flex-col pt-1 animate-in fade-in slide-in-from-top-2 duration-300">
                               <div class="flex items-center gap-2">
-                                <div class="relative flex-1 flex items-center bg-transparent border-b-2 border-transparent pb-0.5 rounded-none px-0 transition-all"
-                                     :class="[!uiStore.isNamingSqlSnippet ? 'focus-within:border-primary/50' : '']">
+                                <div class="relative flex-1 flex items-center bg-muted/20 border border-primary/5 shadow-inner-sm rounded-2xl px-3 transition-all focus-within:bg-background focus-within:border-primary/30 focus-within:shadow-md h-12"
+                                     :class="[!uiStore.isNamingSqlSnippet ? 'ring-primary/5' : '']">
+                                  <Search class="size-4 text-muted-foreground/30 mr-2 shrink-0 group-focus-within/identity:text-primary transition-colors" />
                                   <Input 
                                     ref="uiStore.profileNameInput" 
                                     v-model="runnerStore.editableProfileName" 
-                                    class="font-black h-10 border-0 bg-transparent focus-visible:ring-0 px-2 -ml-2 transition-all rounded-md text-xl flex-1 min-w-0 cursor-text shadow-none" 
+                                    class="font-black h-full border-0 bg-transparent focus-visible:ring-0 px-0 transition-all text-lg flex-1 min-w-0 cursor-text shadow-none" 
                                     placeholder="Profile name or search issue..."
                                     @focus="() => { if (!runnerStore.preventAutoSearch) uiStore.isIssueSearchVisible = true; }"
                                     @input="uiStore.isIssueSearchVisible = true"
                                     @blur="runnerStore.commitProfileName"
                                     @keydown.enter="runnerStore.commitProfileName" 
                                   />
-                                  <div v-if="runnerStore.backlogIssueKey" class="flex items-center shrink-0 mx-1 group/badge transition-all rounded-lg overflow-hidden shadow-sm h-[26px]" :class="runnerStore.backlogIssueNotFound ? 'opacity-70 border border-dashed border-muted-foreground grayscale' : ''">
+                                  <div v-if="runnerStore.backlogIssueKey" class="flex items-center shrink-0 ml-2 group/badge transition-all rounded-lg overflow-hidden shadow-sm h-[26px]" :class="runnerStore.backlogIssueNotFound ? 'opacity-70 border border-dashed border-muted-foreground grayscale' : ''">
                                     <div class="flex items-center gap-1.5 px-2.5 h-full text-[9px] font-black shrink-0 text-white"
                                          :style="{ backgroundColor: runnerStore.backlogIssueColor || 'var(--primary)' }"
                                          :title="runnerStore.backlogIssueNotFound ? 'Issue may have been deleted' : runnerStore.backlogIssueSummary">
@@ -398,222 +390,233 @@ onMounted(async () => {
                                   </button>
                                 </div>
                               </div>
-                            </div>
-                          </template>
-                          <template v-else>
-                            <h2 class="text-xl font-black tracking-tight text-muted-foreground/40 mt-1">Select a Profile</h2>
-                          </template>
-                        </div>
-                      </div>
 
-                      <div class="space-y-6 pt-2">
-                        <div class="flex items-center justify-between mb-1.5 px-0.5">
-                          <Label class="text-[10px] text-muted-foreground uppercase tracking-widest font-bold flex items-center gap-1.5"><AppWindow class="size-3.5 text-primary opacity-80" /> Target Project</Label>
-                          
-                          <Dialog>
-                            <DialogTrigger as-child>
-                              <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all group/settings" title="Configuration & SQL Setup">
-                                <Settings2 class="size-4 group-hover/settings:rotate-90 transition-transform duration-500" />
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent class="max-w-6xl w-[90vw] h-[90vh] flex flex-col p-0 gap-0 overflow-hidden bg-card/95 backdrop-blur-2xl border-primary/20 shadow-2xl rounded-2xl">
-                              <DialogHeader class="px-6 py-4 border-b bg-muted/30">
-                                <div class="flex items-center gap-3">
-                                  <div class="p-2 rounded-xl bg-primary/10 text-primary">
-                                    <Settings2 class="size-5" />
-                                  </div>
-                                  <div>
-                                    <DialogTitle class="text-xl font-black uppercase tracking-tight">Project Configuration</DialogTitle>
-                                    <p class="text-[10px] font-bold text-muted-foreground uppercase tracking-widest opacity-50">SQL Setup & App.config Template</p>
-                                  </div>
-                                </div>
-                              </DialogHeader>
-                              
-                              <div class="flex-1 overflow-hidden p-6">
-                                  <Tabs defaultValue="target" class="h-full flex flex-col gap-6">
-                                    <TabsList class="grid w-full grid-cols-3 h-10 p-1 bg-muted/50 rounded-xl">
-                                      <TabsTrigger value="target" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Target Config (Test)</TabsTrigger>
-                                      <TabsTrigger value="run" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Run Config (Exe)</TabsTrigger>
-                                      <TabsTrigger value="conn" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Connection Strings</TabsTrigger>
-                                    </TabsList>
+                              <div class="mt-4 pt-4 border-t border-dashed border-border/40 px-2 pb-2">
+                                <div class="flex items-center justify-between mb-2">
+                                  <div class="flex items-center gap-2">
+                                    <Label class="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider flex items-center gap-1.5">
+                                      <Target class="size-3 text-primary/60" />
+                                      <span>Build Targets</span>
+                                    </Label>
                                     
-                                    <TabsContent value="target" class="flex flex-col flex-1 min-h-0 mt-0 gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
-                                       <!-- 1. App.config Setup (Target/Test) -->
-                                       <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
-                                          <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
-                                            <div class="flex items-center gap-2">
-                                              <div class="size-2 rounded-full bg-blue-500"></div>
-                                              <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">App.config (Target Template)</Label>
+                                    <Dialog>
+                                      <DialogTrigger as-child>
+                                        <Button variant="ghost" size="icon" class="size-5 h-5 w-5 rounded-full hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all group/settings" title="Configuration & SQL Setup">
+                                          <Settings2 class="size-2.5 group-hover/settings:rotate-90 transition-transform duration-500" />
+                                        </Button>
+                                      </DialogTrigger>
+                                      <DialogContent class="max-w-6xl w-[90vw] h-[90vh] flex flex-col p-0 gap-0 overflow-hidden bg-card/95 backdrop-blur-2xl border-primary/20 shadow-2xl rounded-2xl">
+                                        <DialogHeader class="px-6 py-4 border-b bg-muted/30">
+                                          <div class="flex items-center gap-3">
+                                            <div class="p-2 rounded-xl bg-primary/10 text-primary">
+                                              <Settings2 class="size-5" />
+                                            </div>
+                                            <div>
+                                              <DialogTitle class="text-xl font-black uppercase tracking-tight">Project Configuration</DialogTitle>
+                                              <p class="text-[10px] font-bold text-muted-foreground uppercase tracking-widest opacity-50">SQL Setup & App.config Template</p>
                                             </div>
                                           </div>
-                                          <Textarea v-model="runnerStore.configTemplate" 
-                                                    class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
-                                                    placeholder="<!-- XML Template content (for Test) -->" />
-                                       </div>
-
-                                    </TabsContent>
-
-                                    <TabsContent value="run" class="flex flex-col flex-1 min-h-0 mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                                       <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
-                                          <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
-                                            <div class="flex items-center gap-2">
-                                              <div class="size-2 rounded-full bg-green-500"></div>
-                                              <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">App.config (Run Template)</Label>
-                                            </div>
-                                          </div>
-                                          <Textarea v-model="runnerStore.runConfigTemplate" 
-                                                    class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
-                                                    placeholder="<!-- Run XML content -->" />
-                                       </div>
-                                    </TabsContent>
-                                    <TabsContent value="conn" class="flex flex-col flex-1 min-h-0 mt-0 animate-in fade-in slide-in-from-top-4 duration-300">
-                                       <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
-                                          <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
-                                            <div class="flex items-center gap-2">
-                                              <div class="size-2 rounded-full bg-orange-500"></div>
-                                              <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">Connection Strings Override</Label>
-                                            </div>
-                                          </div>
-                                          <Textarea v-model="runnerStore.connectionStringTemplate" 
-                                                    class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
-                                                    placeholder="<connectionStrings>&#10;  <add name=&quot;EntityFramework&quot; connectionString=&quot;Data Source=...;Initial Catalog=...;Integrated Security=True&quot; />&#10;</connectionStrings>" />
-                                          <div class="px-4 py-2 bg-primary/5 text-[9px] font-bold text-primary/60 uppercase tracking-widest border-t border-primary/5">
-                                            SQL Server and Database will still be automatically mapped.
-                                          </div>
-                                       </div>
-                                    </TabsContent>
-                                  </Tabs>
-                              </div>
-                            </DialogContent>
-                          </Dialog>
-                        </div>
-                            <Select v-model="runnerStore.selectedProjectRoot" @update:model-value="runnerStore.applySelectedProject">
-                              <SelectTrigger class="w-full h-9 bg-muted/20 border-input">
-                                <div class="truncate max-w-full font-medium text-xs">
-                                  <SelectValue placeholder="Scan projects to select...">
-                                    {{ runnerStore.discoveredProjects.find(p => p.root === runnerStore.selectedProjectRoot)?.name }}
-                                  </SelectValue>
-                                </div>
-                              </SelectTrigger>
-                              <SelectContent class="p-1">
-                                <div class="py-2 px-1">
-                                  <div class="relative">
-                                    <Search class="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground opacity-40" />
-                                    <input v-model="runnerStore.projectSearch" 
-                                           class="w-full bg-background border border-input h-9 text-[11px] pl-9 pr-2 rounded-md focus:outline-none focus:ring-1 focus:ring-primary/20 placeholder:text-muted-foreground/50 transition-all font-medium" 
-                                           placeholder="Filter projects..."
-                                           @mousedown.stop
-                                           @keydown.stop />
-                                  </div>
-                                </div>
-                                <div class="max-h-[250px] overflow-y-auto custom-scrollbar">
-                                  <SelectItem v-for="item in runnerStore.filteredDiscoveredProjects" :key="item.root" :value="item.root">
-                                    <div class="flex flex-col items-start gap-0.5">
-                                      <span class="text-xs font-bold">{{ item.name }}</span>
-                                      <span class="text-[9px] text-muted-foreground opacity-60 truncate max-w-[300px]">{{ item.root }}</span>
-                                    </div>
-                                  </SelectItem>
-                                </div>
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          <div class="mt-2 pt-2 border-t border-dashed border-border/40">
-                            <div class="flex items-center justify-between mb-2">
-                              <Label class="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider flex items-center gap-1.5">
-                                <Target class="size-3 text-primary/60" />
-                                <span>Build Targets</span>
-                              </Label>
-                              <span class="text-[9px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">
-                                {{ runnerStore.selectedBuildProjects.size }} / {{ runnerStore.discoveredProjects.length }}
-                              </span>
-                            </div>
-                            
-                            <div class="space-y-1.5">
-                              <Select>
-                                <SelectTrigger class="w-full h-7 bg-background/50 border-dashed border-input hover:bg-background hover:border-primary/30 text-[11px] transition-all">
-                                  <SelectValue>
-                                    {{ runnerStore.selectedBuildProjects.size > 0 
-                                      ? runnerStore.selectedBuildProjects.size + ' project(s) selected' 
-                                      : '+ Select build targets' }}
-                                  </SelectValue>
-                                </SelectTrigger>
-                                <SelectContent class="p-0">
-                                  <div class="p-2 border-b border-border/30 space-y-1.5">
-                                    <div class="relative">
-                                      <Search class="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/50" />
-                                      <Input 
-                                        v-model="runnerStore.buildProjectSearch" 
-                                        placeholder="Search projects..."
-                                        class="h-7 text-[10px] pl-7 pr-8 bg-background/50"
-                                      />
-                                      <button 
-                                        v-if="runnerStore.buildProjectSearch"
-                                        class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground"
-                                        @click.stop="runnerStore.buildProjectSearch = ''"
-                                      >
-                                        <X class="size-3" />
-                                      </button>
-                                    </div>
-                                    <div class="flex items-center justify-between">
-                                      <button 
-                                        v-if="runnerStore.filteredBuildProjects.length > 0"
-                                        class="text-[9px] font-medium text-primary hover:text-primary/80"
-                                        @click.stop="runnerStore.selectedBuildProjects.size === runnerStore.filteredBuildProjects.length ? runnerStore.selectedBuildProjects.clear() : runnerStore.selectedBuildProjects = new Set(runnerStore.filteredBuildProjects.map(p => p.root))"
-                                      >
-                                        {{ runnerStore.selectedBuildProjects.size === runnerStore.filteredBuildProjects.length ? 'Uncheck All' : 'Check All' }}
-                                      </button>
-                                      <span v-else></span>
-                                    </div>
-                                  </div>
-                                  <div class="max-h-[180px] overflow-y-auto custom-scrollbar p-1">
-                                    <div v-if="runnerStore.filteredBuildProjects.length === 0" class="px-2 py-3 text-[10px] text-muted-foreground/50 text-center italic">
-                                      No projects found
-                                    </div>
-                                    <div 
-                                      v-for="proj in runnerStore.filteredBuildProjects" 
-                                      :key="proj.root"
-                                      class="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer"
-                                      :class="runnerStore.selectedBuildProjects.has(proj.root) ? 'bg-primary/5' : ''"
-                                      @click="runnerStore.toggleBuildProject(proj.root)"
+                                        </DialogHeader>
+                                        
+                                        <div class="flex-1 overflow-hidden p-6">
+                                            <Tabs defaultValue="target" class="h-full flex flex-col gap-6">
+                                              <TabsList class="grid w-full grid-cols-3 h-10 p-1 bg-muted/50 rounded-xl">
+                                                <TabsTrigger value="target" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Target Config (Test)</TabsTrigger>
+                                                <TabsTrigger value="run" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Run Config (Exe)</TabsTrigger>
+                                                <TabsTrigger value="conn" class="rounded-lg font-bold uppercase tracking-widest text-[11px]">Connection Strings</TabsTrigger>
+                                              </TabsList>
+                                              
+                                              <TabsContent value="target" class="flex flex-col flex-1 min-h-0 mt-0 gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
+                                                 <!-- 1. App.config Setup (Target/Test) -->
+                                                 <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
+                                                    <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
+                                                      <div class="flex items-center gap-2">
+                                                        <div class="size-2 rounded-full bg-blue-500"></div>
+                                                        <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">App.config (Target Template)</Label>
+                                                      </div>
+                                                    </div>
+                                                    <Textarea v-model="runnerStore.configTemplate" 
+                                                              class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
+                                                              placeholder="<!-- XML Template content (for Test) -->" />
+                                                 </div>
+          
+                                              </TabsContent>
+          
+                                              <TabsContent value="run" class="flex flex-col flex-1 min-h-0 mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                                                 <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
+                                                    <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
+                                                      <div class="flex items-center gap-2">
+                                                        <div class="size-2 rounded-full bg-green-500"></div>
+                                                        <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">App.config (Run Template)</Label>
+                                                      </div>
+                                                    </div>
+                                                    <Textarea v-model="runnerStore.runConfigTemplate" 
+                                                              class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
+                                                              placeholder="<!-- Run XML content -->" />
+                                                 </div>
+                                              </TabsContent>
+                                              <TabsContent value="conn" class="flex flex-col flex-1 min-h-0 mt-0 animate-in fade-in slide-in-from-top-4 duration-300">
+                                                 <div class="flex flex-col flex-1 min-h-0 border border-primary/10 rounded-2xl overflow-hidden bg-background/50 shadow-inner">
+                                                    <div class="flex items-center justify-between px-4 py-2 bg-muted/30 border-b border-primary/10 shrink-0">
+                                                      <div class="flex items-center gap-2">
+                                                        <div class="size-2 rounded-full bg-orange-500"></div>
+                                                        <Label class="text-[10px] uppercase font-black text-muted-foreground tracking-widest">Connection Strings Override</Label>
+                                                      </div>
+                                                    </div>
+                                                    <Textarea v-model="runnerStore.connectionStringTemplate" 
+                                                              class="flex-1 font-mono text-[11px] p-4 leading-relaxed bg-transparent border-0 focus-visible:ring-0 resize-none custom-scrollbar rounded-none" 
+                                                              placeholder="<connectionStrings>&#10;  <add name=&quot;EntityFramework&quot; connectionString=&quot;Data Source=...;Initial Catalog=...;Integrated Security=True&quot; />&#10;</connectionStrings>" />
+                                                    <div class="px-4 py-2 bg-primary/5 text-[9px] font-bold text-primary/60 uppercase tracking-widest border-t border-primary/5">
+                                                      SQL Server and Database will still be automatically mapped.
+                                                    </div>
+                                                 </div>
+                                              </TabsContent>
+                                            </Tabs>
+                                        </div>
+                                      </DialogContent>
+                                    </Dialog>
+                                    
+                                    <Button 
+                                      variant="ghost" 
+                                      size="icon" 
+                                      class="size-5 h-5 w-5 bg-primary/5 hover:bg-primary/10 text-primary/60 transition-all rounded-full" 
+                                      title="Check Sync Status Now"
+                                      @click.stop="runnerStore.checkProjectSyncs"
                                     >
-                                      <div 
-                                        class="w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0"
-                                        :class="runnerStore.selectedBuildProjects.has(proj.root) 
-                                          ? 'bg-primary border-primary text-primary-foreground' 
-                                          : 'border-border/50 bg-background'"
-                                      >
-                                        <Check v-if="runnerStore.selectedBuildProjects.has(proj.root)" class="size-2.5" />
-                                      </div>
-                                      <div class="flex-1 min-w-0">
-                                        <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
-                                        <div class="text-[9px] text-muted-foreground/40 truncate">{{ proj.root }}</div>
-                                      </div>
-                                    </div>
+                                      <RefreshCw class="size-2.5" />
+                                    </Button>
                                   </div>
-                                </SelectContent>
-                              </Select>
-                              
-                              <TransitionGroup name="list" tag="div" class="space-y-1">
-                                <div v-for="proj in runnerStore.discoveredProjects.filter(p => runnerStore.selectedBuildProjects.has(p.root))" :key="proj.root" class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border/30 bg-background/40 hover:bg-background hover:border-primary/20 transition-all">
-                                  <div class="size-5 rounded bg-gradient-to-br from-green-500/10 to-green-500/5 flex items-center justify-center border border-green-500/20 shrink-0">
-                                    <Hammer class="size-2.5 text-green-600/70" />
-                                  </div>
-                                  <div class="flex-1 min-w-0">
-                                    <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
-                                  </div>
-                                  <Button variant="ghost" size="icon" class="h-5 w-5 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" @click.stop="runnerStore.toggleBuildProject(proj.root)" title="Remove"><X class="size-3" /></Button>
+                                  <span class="text-[9px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">
+                                    {{ runnerStore.selectedBuildProjects.size }} / {{ runnerStore.discoveredProjects.length }}
+                                  </span>
                                 </div>
-                              </TransitionGroup>
-                              
-                              <div v-if="runnerStore.selectedBuildProjects.size === 0" class="text-[10px] text-muted-foreground/40 italic text-center py-1">
-                                No targets selected - all projects will be built
+                                
+                                <div class="space-y-1.5">
+                                  <Select>
+                                    <SelectTrigger class="w-full h-7 bg-background/50 border-dashed border-input hover:bg-background hover:border-primary/30 text-[11px] transition-all">
+                                      <SelectValue>
+                                        {{ runnerStore.selectedBuildProjects.size > 0 
+                                          ? runnerStore.selectedBuildProjects.size + ' project(s) selected' 
+                                          : '+ Select build targets' }}
+                                      </SelectValue>
+                                    </SelectTrigger>
+                                    <SelectContent class="p-0">
+                                      <div class="p-2 border-b border-border/30 space-y-2">
+                                        <div class="relative group/search">
+                                          <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/30 group-focus-within/search:text-primary transition-colors" />
+                                          <Input 
+                                            v-model="runnerStore.buildProjectSearch" 
+                                            placeholder="Filter projects..."
+                                            class="h-9 text-[11px] pl-9 pr-8 bg-muted/20 border-primary/5 focus-visible:ring-primary/20 focus-visible:bg-background transition-all rounded-xl"
+                                          />
+                                          <button 
+                                            v-if="runnerStore.buildProjectSearch"
+                                            class="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-destructive transition-colors"
+                                            @click.stop="runnerStore.buildProjectSearch = ''"
+                                          >
+                                            <X class="size-3" />
+                                          </button>
+                                        </div>
+                                        <div class="flex items-center justify-between w-full px-1">
+                                          <span class="text-[9px] uppercase tracking-widest text-muted-foreground/50 font-black">Available Targets</span>
+                                        </div>
+                                      </div>
+                                        
+                                        <div class="p-2 border-b border-border/30 space-y-1.5 pt-0">
+                                          <div class="flex items-center justify-between">
+                                            <button 
+                                              v-if="runnerStore.filteredBuildProjects.length > 0"
+                                              class="text-[9px] font-medium text-primary hover:text-primary/80"
+                                              @click.stop="runnerStore.selectedBuildProjects.size === runnerStore.filteredBuildProjects.length ? runnerStore.selectedBuildProjects.clear() : runnerStore.selectedBuildProjects = new Set(runnerStore.filteredBuildProjects.map((p: any) => p.root))"
+                                            >
+                                              {{ runnerStore.selectedBuildProjects.size === runnerStore.filteredBuildProjects.length ? 'Uncheck All' : 'Check All' }}
+                                            </button>
+                                            <span v-else></span>
+                                          </div>
+                                        </div>
+                                        
+                                        <div class="max-h-[180px] overflow-y-auto custom-scrollbar p-1">
+                                          <div v-if="runnerStore.filteredBuildProjects.length === 0" class="px-2 py-3 text-[10px] text-muted-foreground/50 text-center italic">
+                                            No projects found
+                                          </div>
+                                          <div 
+                                            v-for="proj in runnerStore.filteredBuildProjects" 
+                                            :key="proj.root"
+                                            class="group flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted/50 cursor-pointer"
+                                            :class="runnerStore.selectedBuildProjects.has(proj.root) ? 'bg-primary/5' : ''"
+                                            @click="runnerStore.toggleBuildProject(proj.root)"
+                                          >
+                                            <div 
+                                              class="w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0"
+                                              :class="runnerStore.selectedBuildProjects.has(proj.root) 
+                                                ? 'bg-primary border-primary text-primary-foreground' 
+                                                : 'border-border/50 bg-background'"
+                                            >
+                                              <Check v-if="runnerStore.selectedBuildProjects.has(proj.root)" class="size-2.5" />
+                                            </div>
+                                            <div class="flex-1 min-w-0">
+                                              <div class="flex items-center gap-1.5">
+                                                <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                    </SelectContent>
+                                  </Select>
+                                  
+                                  <TransitionGroup name="list" tag="div" class="space-y-1">
+                                    <div v-for="proj in runnerStore.discoveredProjects.filter((p: any) => runnerStore.selectedBuildProjects.has(p.root))" :key="proj.root" class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border/30 bg-background/40 hover:bg-background hover:border-primary/20 transition-all">
+                                      <!-- Integrated Sync Status Indicator in the Hammer Icon Container -->
+                                      <TooltipProvider>
+                                        <Tooltip>
+                                          <TooltipTrigger as-child>
+                                            <div 
+                                              class="size-5 rounded bg-gradient-to-br flex items-center justify-center border shrink-0 transition-all duration-300"
+                                              :class="[
+                                                !runnerStore.projectSyncStates[proj.root] || runnerStore.projectSyncStates[proj.root] === 'missing' 
+                                                  ? 'from-muted/20 to-muted/10 border-muted-foreground/10' 
+                                                  : runnerStore.projectSyncStates[proj.root] === 'synced'
+                                                    ? 'from-emerald-500/20 to-emerald-500/10 border-emerald-500/20 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
+                                                    : 'from-amber-500/20 to-amber-500/10 border-amber-500/20 shadow-[0_0_8px_rgba(245,158,11,0.1)]'
+                                              ]"
+                                            >
+                                              <Hammer 
+                                                class="size-2.5 transition-colors" 
+                                                :class="[
+                                                  !runnerStore.projectSyncStates[proj.root] || runnerStore.projectSyncStates[proj.root] === 'missing'
+                                                    ? 'text-muted-foreground/40'
+                                                    : runnerStore.projectSyncStates[proj.root] === 'synced'
+                                                      ? 'text-emerald-500'
+                                                      : 'text-amber-500'
+                                                ]"
+                                              />
+                                            </div>
+                                          </TooltipTrigger>
+                                          <TooltipContent side="left">
+                                            <div class="text-[10px] font-medium">
+                                              <span v-if="runnerStore.projectSyncStates[proj.root] === 'synced'">✅ Configuration Synchronized</span>
+                                              <span v-else-if="runnerStore.projectSyncStates[proj.root] === 'mismatch'">️⚠️ Config Mismatch (Needs Rebuild)</span>
+                                              <span v-else>⚪ No config file in output path</span>
+                                            </div>
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </TooltipProvider>
+    
+                                      <div class="flex-1 min-w-0 ml-1">
+                                        <div class="text-[11px] font-medium truncate">{{ proj.name }}</div>
+                                      </div>
+                                      <Button variant="ghost" size="icon" class="h-5 w-5 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" @click.stop="runnerStore.toggleBuildProject(proj.root)" title="Remove"><X class="size-3" /></Button>
+                                    </div>
+                                  </TransitionGroup>
+                                  
+                                  <div v-if="runnerStore.selectedBuildProjects.size === 0" class="text-[10px] text-muted-foreground/40 italic text-center py-1">
+                                    No targets selected - all projects will be built
+                                  </div>
+                                </div>
                               </div>
                             </div>
-                          </div>
 
-
-                        <div class="space-y-3 pt-2 mt-2 border-t border-border/40">
+                    <div class="space-y-3 pt-2 mt-2 border-t border-border/40">
                           <div class="flex items-center justify-between px-0.5">
                             <Label class="text-[10px] font-bold text-muted-foreground uppercase flex items-center gap-1.5">
                               <TerminalSquare class="size-3.5 text-primary opacity-80" /> 
@@ -663,7 +666,7 @@ onMounted(async () => {
                                   <div v-else class="text-xs font-mono text-muted-foreground/50 cursor-pointer pointer-events-none">.bat file</div>
                                 </div>
                                 <div class="flex items-center gap-0.5 pr-1 shrink-0 transition-opacity">
-                                  <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background hover:text-foreground shadow-sm border border-transparent hover:border-border/50 transition-all" @click.stop="runnerStore.browseBatFile(idx)" title="Browse"><FolderOpen class="size-3.5" /></Button>
+                                  <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background hover:text-foreground shadow-sm border border-transparent hover:border-border/50 transition-all" @click.stop="() => runnerStore.browseBatFile(idx)" title="Browse"><FolderOpen class="size-3.5" /></Button>
                                   <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-destructive/10 hover:text-destructive text-destructive/70 transition-all" @click.stop="runnerStore.removeBatConfig(idx)" title="Remove"><Trash2 class="size-3.5" /></Button>
                                 </div>
                               </div>
@@ -824,7 +827,7 @@ onMounted(async () => {
                                 :disabled="runnerStore.sqlSnippets.length === 0"
                                 :show-result="uiStore.showSqlResult"
                                 :result-data="uiStore.sqlResultData"
-:is-running="uiStore.isSqlRunning"
+                                :is-running="uiStore.isSqlRunning"
                                 @toggleResult="uiStore.showSqlResult = !uiStore.showSqlResult"
                                 @change="(v: string) => { 
                                    console.log('[SQL Editor] Change triggered, activeSqlSnippetId:', runnerStore.activeSqlSnippetId);
@@ -832,7 +835,7 @@ onMounted(async () => {
                                    if(s) s.content = v;
                                    
                                    // Directly update in setupProfiles and save
-const profile = runnerStore.setupProfiles?.find((p: any) => p.id === runnerStore.selectedSetupId);
+                                   const profile = runnerStore.setupProfiles?.find((p: any) => p.id === runnerStore.selectedSetupId);
                                     if(profile && profile.sqlSnippets) {
                                       const snippetIdx = profile.sqlSnippets.findIndex((s: any) => s.id === runnerStore.activeSqlSnippetId);
                                       if(snippetIdx >= 0) {
@@ -850,16 +853,26 @@ const profile = runnerStore.setupProfiles?.find((p: any) => p.id === runnerStore
                                    }
                                }"
                               />
-                            </div>
-                          </div>
-
-                        </div>
-                    </div>
-                  </div>
-                </section>
-
-            </div>
-
+                             </div>
+                           </div>
+                         </template>
+                         <template v-else>
+                           <div class="flex-1 h-full flex flex-col items-center justify-center p-12 text-center opacity-30 animate-in fade-in zoom-in-95 duration-700">
+                             <div class="p-8 rounded-full bg-muted/20 mb-8 ring-1 ring-border/50 shadow-inner relative group/fallback">
+                               <div class="absolute inset-0 bg-primary/10 rounded-full blur-2xl opacity-0 group-hover/fallback:opacity-100 transition-opacity duration-1000"></div>
+                               <UserCircle2 class="size-20 text-muted-foreground/20 relative z-10" />
+                             </div>
+                             <h3 class="text-2xl font-black uppercase tracking-[0.2em] text-muted-foreground/50 mb-4">No Profile Selected</h3>
+                             <p class="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/40 max-w-[280px] leading-loose">Choose a profile from the left sidebar to access build targets and SQL configuration.</p>
+                           </div>
+                         </template>
+ 
+                       </div>
+                     </div>
+                   </div>
+                 </div>
+               </section>
+             </div>
             <div class="flex-1 h-full flex flex-col gap-4 min-w-0 pt-2 pr-6 pl-2 pb-0 overflow-hidden">
               <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl">
                 <!-- Header with Session Switcher -->

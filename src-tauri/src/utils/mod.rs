@@ -34,21 +34,38 @@ pub fn normalize_input_path(path: &str) -> PathBuf {
 }
 
 pub fn validate_startup_abs(root: &Path, startup_rel: &str) -> Result<PathBuf, String> {
-    let mut clean_rel = startup_rel.replace("?\\", "");
-    if clean_rel.starts_with(r#"\\?\"#) {
-        clean_rel = clean_rel[4..].to_string();
-    }
-    let startup_abs = root.join(&clean_rel);
-    let root_canon = fs::canonicalize(root).map_err(|e| format!("Invalid project root: {e}"))?;
-    let startup_canon = fs::canonicalize(&startup_abs).map_err(|e| format!("Startup project does not exist: {e}\n(Path: {})", clean_rel))?;
-    if !startup_canon.starts_with(&root_canon) {
-        return Err("Startup project is outside of project root".to_string());
-    }
-    let s = startup_canon.to_string_lossy().to_string();
-    if s.starts_with(r#"\\?\"#) {
-        Ok(PathBuf::from(&s[4..]))
+    let clean_rel = startup_rel.trim();
+    let startup_path = PathBuf::from(clean_rel);
+
+    // If startup_path is absolute, use it directly; otherwise join with root
+    let startup_abs = if startup_path.is_absolute() {
+        startup_path
     } else {
-        Ok(startup_canon)
+        root.join(clean_rel)
+    };
+
+    // Use a more robust check for "starts_with" that handles UNC and casing
+    let root_norm = fs::canonicalize(root)
+        .map_err(|e| format!("Invalid project root: {e}"))?;
+    let startup_norm = fs::canonicalize(&startup_abs)
+        .map_err(|e| format!("Startup project does not exist: {e}\n(Path: {})", clean_rel))?;
+
+    let root_s = root_norm.to_string_lossy().to_lowercase().replace(r#"\\?\"#, "");
+    let startup_s = startup_norm.to_string_lossy().to_lowercase().replace(r#"\\?\"#, "");
+
+    if !startup_s.starts_with(&root_s) {
+        return Err(format!(
+            "Startup project is outside of project root.\nRoot: {}\nProject: {}",
+            root_s, startup_s
+        ));
+    }
+
+    // Return the canonicalized path without UNC prefix for standard usage
+    let final_s = startup_norm.to_string_lossy().to_string();
+    if final_s.starts_with(r#"\\?\"#) {
+        Ok(PathBuf::from(&final_s[4..]))
+    } else {
+        Ok(startup_norm)
     }
 }
 
@@ -225,7 +242,7 @@ pub fn resolve_output_exe_path(
     deploy_path: Option<&String>,
     root: &Path,
 ) -> PathBuf {
-    let project_dir = startup_abs.parent().unwrap();
+    let project_dir = startup_abs.parent().unwrap_or(root);
     let source_exe_name = startup_abs
         .file_name()
         .and_then(|x| x.to_str())
@@ -245,10 +262,14 @@ pub fn resolve_output_exe_path(
                 };
             }
             if line.contains("<OutputPath>") && condition_matches {
-                let s = line.find("<OutputPath>").unwrap() + 12;
-                let e = line.find("</OutputPath>").unwrap_or(line.len());
-                custom_out = Some(line[s..e].trim().to_string());
-                break;
+                if let Some(s_pos) = line.find("<OutputPath>") {
+                    let s = s_pos + 12;
+                    let e = line.find("</OutputPath>").unwrap_or(line.len());
+                    if e > s {
+                        custom_out = Some(line[s..e].trim().to_string());
+                        break;
+                    }
+                }
             }
         }
     }

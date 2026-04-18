@@ -141,10 +141,14 @@ pub fn copy_alias_exe_and_config(
                 }
             }
             if line.contains("<OutputPath>") && condition_matches {
-                let s = line.find("<OutputPath>").unwrap() + 12;
-                let e = line.find("</OutputPath>").unwrap_or(line.len());
-                custom_out = Some(line[s..e].trim().to_string());
-                break;
+                if let Some(s_pos) = line.find("<OutputPath>") {
+                    let s = s_pos + 12;
+                    let e = line.find("</OutputPath>").unwrap_or(line.len());
+                    if e > s {
+                        custom_out = Some(line[s..e].trim().to_string());
+                        break;
+                    }
+                }
             }
         }
     }
@@ -168,7 +172,8 @@ pub fn copy_alias_exe_and_config(
     };
     
     let dst = dst_dir.join(&final_alias);
-    fs::create_dir_all(dst.parent().unwrap()).map_err(|e| format!("Could not create destination directory: {e}"))?;
+    let dest_parent = dst.parent().ok_or_else(|| "Invalid destination path".to_string())?;
+    fs::create_dir_all(dest_parent).map_err(|e| format!("Could not create destination directory: {e}"))?;
     let _root_canon = fs::canonicalize(root).map_err(|e| format!("Invalid project root: {e}"))?;
     let src_canon = fs::canonicalize(&src).map_err(|e| format!("EXE file not found after build: {e}"))?;
     
@@ -286,7 +291,7 @@ pub fn copy_alias_exe_and_config(
 
 /// Resolves the output directory from a csproj file's OutputPath for the given build config
 fn resolve_csproj_output_dir(csproj_path: &Path, config: &str) -> PathBuf {
-    let project_dir = csproj_path.parent().unwrap();
+    let project_dir = csproj_path.parent().unwrap_or(csproj_path);
     if let Ok(content) = fs::read_to_string(csproj_path) {
         let mut condition_matches = true;
         for line in content.lines() {
@@ -298,10 +303,14 @@ fn resolve_csproj_output_dir(csproj_path: &Path, config: &str) -> PathBuf {
                 };
             }
             if line.contains("<OutputPath>") && condition_matches {
-                let s = line.find("<OutputPath>").unwrap() + 12;
-                let e = line.find("</OutputPath>").unwrap_or(line.len());
-                let output_path = line[s..e].trim();
-                return project_dir.join(output_path.replace('\\', "/"));
+                if let Some(s_pos) = line.find("<OutputPath>") {
+                    let s = s_pos + 12;
+                    let e = line.find("</OutputPath>").unwrap_or(line.len());
+                    if e > s {
+                        let output_path = line[s..e].trim();
+                        return project_dir.join(output_path.replace('\\', "/"));
+                    }
+                }
             }
         }
     }
@@ -628,8 +637,14 @@ pub fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> 
 pub fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
     let root = normalize_input_path(&request.project_root);
     let startup_abs = validate_startup_abs(&root, &request.startup_project)?;
-    let project_dir = startup_abs.parent().unwrap();
-    let startup_file = startup_abs.file_name().unwrap();
+    let project_dir = match startup_abs.parent() {
+        Some(p) => p,
+        None => return Err("Invalid project directory".to_string()),
+    };
+    let startup_file = match startup_abs.file_name() {
+        Some(f) => f,
+        None => return Err("Invalid project filename".to_string()),
+    };
 
     let mut restore = new_command("dotnet");
     restore
@@ -721,8 +736,7 @@ pub fn dotnet_run_start(
     let root = normalize_input_path(&request.project_root);
     let startup_abs = validate_startup_abs(&root, &request.startup_project)?;
     let config = get_build_config(request.build_config.as_ref());
-    let source_fp = project_source_fingerprint(&startup_abs)?;
-    let state_key = normalize_path(&startup_abs);
+
     
     let target = request.target.as_deref().unwrap_or("exe");
     let is_bat = target == "bat";
@@ -756,38 +770,9 @@ pub fn dotnet_run_start(
                 true // keep in list (shared files like _isync.bat)
             }
         });
-        let project_dir = startup_abs.parent().unwrap();
-        let startup_file_name = startup_abs.file_name().unwrap().to_str().unwrap();
 
-        // Always build for bat and exe targets
+
         if is_bat {
-            let _ = app.emit("build-status", "building");
-            let _ = app.emit("runner-log", "[BUILD] Rebuilding project...");
-            drop(guard);
-            let mut build = new_command("dotnet");
-            build
-                .current_dir(project_dir)
-                .arg("build")
-                .arg(startup_file_name)
-                .arg("-c")
-                .arg(&config);
-            let build_out = run_capture(build)?;
-            if !build_out.stdout.trim().is_empty() {
-                for line in build_out.stdout.lines() {
-                    let _ = app.emit("runner-log", format!("  {}", line));
-                }
-            }
-            if !build_out.stderr.trim().is_empty() {
-                for line in build_out.stderr.lines() {
-                    let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
-                }
-            }
-            if build_out.code != 0 {
-                let _ = app.emit("build-status", "error");
-                let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
-                return Err(format!("Build failed, exit code {}", build_out.code));
-            }
-            
             // Write configTemplate (TARGET CONFIG) to target project's OutputPath
             if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
                 match write_config_for_project(&startup_abs, &config, ct) {
@@ -795,39 +780,8 @@ pub fn dotnet_run_start(
                     Err(e) => { let _ = app.emit("runner-log", format!("[WARN] Config write failed: {}", e)); },
                 }
             }
-
-            let mut guard2 = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
-            guard2.fingerprints.insert(state_key.clone(), source_fp);
             let _ = app.emit("build-status", "done");
         } else if is_exe {
-            // Build target project
-            let _ = app.emit("build-status", "building");
-            let _ = app.emit("runner-log", "[BUILD] Rebuilding project...");
-            drop(guard);
-            let mut build = new_command("dotnet");
-            build
-                .current_dir(project_dir)
-                .arg("build")
-                .arg(startup_file_name)
-                .arg("-c")
-                .arg(&config);
-            let build_out = run_capture(build)?;
-            if !build_out.stdout.trim().is_empty() {
-                for line in build_out.stdout.lines() {
-                    let _ = app.emit("runner-log", format!("  {}", line));
-                }
-            }
-            if !build_out.stderr.trim().is_empty() {
-                for line in build_out.stderr.lines() {
-                    let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
-                }
-            }
-            if build_out.code != 0 {
-                let _ = app.emit("build-status", "error");
-                let _ = app.emit("runner-log", format!("[ERROR] Build failed (code {})", build_out.code));
-                return Err(format!("Build failed, exit code {}", build_out.code));
-            }
-            
             // Write configTemplate (TARGET CONFIG) to startup project's OutputPath
             if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
                 match write_config_for_project(&startup_abs, &config, ct) {
@@ -836,30 +790,8 @@ pub fn dotnet_run_start(
                 }
             }
             
-            // Build RBA and copy/rename exe with config
+            // Handle RBA if present
             if let Some(rba) = get_receive_batch_action(&startup_abs) {
-                let rba_path_str = rba.to_string_lossy().to_string();
-                let _ = app.emit("build-status", "building_rba");
-                let _ = app.emit("runner-log", format!("[BUILD] Building ReceiveBatchAction: {}", rba_path_str));
-                let mut rba_build = new_command("dotnet");
-                rba_build.current_dir(&root).arg("build").arg(&rba_path_str).arg("-c").arg(&config);
-                let rba_out = run_capture(rba_build)?;
-                if !rba_out.stdout.trim().is_empty() {
-                    for line in rba_out.stdout.lines() {
-                        let _ = app.emit("runner-log", format!("  {}", line));
-                    }
-                }
-                if !rba_out.stderr.trim().is_empty() {
-                    for line in rba_out.stderr.lines() {
-                        let _ = app.emit("runner-log", format!("  [ERROR] {}", line));
-                    }
-                }
-                if rba_out.code != 0 {
-                    let _ = app.emit("build-status", "error");
-                    let _ = app.emit("runner-log", format!("[ERROR] ReceiveBatchAction build failed (code {})", rba_out.code));
-                    return Err(format!("ReceiveBatchAction build failed, exit code {}", rba_out.code));
-                }
-                
                 // Copy RBA exe with bat name alias and write runConfigTemplate (RUN CONFIG EXE)
                 let rba_alias = request.alias_exe_name.as_ref()
                     .map(|x| x.trim().to_string())
@@ -888,7 +820,7 @@ pub fn dotnet_run_start(
                     let mut changed = false;
                     
                     let search_bytes = b"SQLCMD";
-                    let insert_bytes = b"-f 932";
+
                     
                     for byte in content_bytes.iter() {
                         new_content.push(*byte);
@@ -1418,11 +1350,171 @@ pub fn write_project_config_output(project_path: String, build_config: String, c
 }
 
 #[tauri::command]
+pub fn verify_debug_output_sync(project_root: String, startup_project: String, expected_cs: String) -> Result<String, String> {
+    let root = normalize_input_path(&project_root);
+    let mut startup_abs = validate_startup_abs(&root, &startup_project)?;
+    
+    // RESOLVE .csproj if startup_abs is a directory
+    if startup_abs.is_dir() {
+        let dir_name = startup_abs.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let named_csproj = startup_abs.join(format!("{}.csproj", dir_name));
+        if named_csproj.exists() {
+            startup_abs = named_csproj;
+        } else {
+            // Fallback: search for ANY .csproj in the folder
+            if let Ok(entries) = fs::read_dir(&startup_abs) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.extension().map(|ex| ex == "csproj").unwrap_or(false) {
+                        startup_abs = p;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if !startup_abs.is_file() {
+        return Ok("missing".to_string());
+    }
+
+    let project_dir = startup_abs.parent().ok_or("Invalid project path")?;
+    let config = "Debug";
+    let mut output_path = String::new();
+    let mut assembly_name = String::new();
+
+    if let Ok(content) = fs::read_to_string(&startup_abs) {
+        let mut in_debug_group = false;
+        for line in content.lines() {
+            let l = line.trim();
+            let l_lower = l.to_lowercase();
+            if l_lower.contains("<propertygroup") {
+                if l_lower.contains("condition=") {
+                    in_debug_group = l_lower.contains(&config.to_lowercase());
+                } else {
+                    in_debug_group = true;
+                }
+            }
+            if in_debug_group {
+                if l_lower.contains("<outputpath>") {
+                    if let Some(s_pos) = l_lower.find("<outputpath>") {
+                        let s = s_pos + 12;
+                        let e = l_lower.find("</outputpath>").unwrap_or(l.len());
+                        if e > s {
+                            output_path = l[s..e].trim().to_string();
+                        }
+                    }
+                }
+                if l_lower.contains("<assemblyname>") {
+                    if let Some(s_pos) = l_lower.find("<assemblyname>") {
+                        let s = s_pos + 14;
+                        let e = l_lower.find("</assemblyname>").unwrap_or(l.len());
+                        if e > s {
+                            assembly_name = l[s..e].trim().to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if output_path.is_empty() {
+        output_path = format!("bin/{}", config);
+    }
+    if assembly_name.is_empty() {
+        assembly_name = startup_abs.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+
+    let out_dir = if Path::new(&output_path).is_absolute() {
+        PathBuf::from(&output_path)
+    } else {
+        project_dir.join(output_path.replace('\\', "/"))
+    };
+
+    let config_fn = format!("{}.exe.config", assembly_name);
+    let config_path = out_dir.join(&config_fn);
+    
+    println!("[SyncCheck] Checking project local path: {}", config_path.display());
+
+    // Check if it exists locally
+    let actual_path = if config_path.exists() {
+        Some(config_path)
+    } else {
+        // FALLBACK: Check workspace batch/EXE
+        let workspace_exe_config = root.join("batch").join("EXE").join(&config_fn);
+        println!("[SyncCheck] Not found locally. Checking fallback: {}", workspace_exe_config.display());
+        if workspace_exe_config.exists() {
+            Some(workspace_exe_config)
+        } else {
+            None
+        }
+    };
+
+    if let Some(path) = actual_path {
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                if expected_cs.is_empty() {
+                    return Ok("synced".to_string());
+                }
+
+                // Smarter matching: Extract Server and DB from expected_cs
+                // expected_cs is usually "Data Source=XXX;Initial Catalog=YYY"
+                let mut target_server = String::new();
+                let mut target_db = String::new();
+                
+                for part in expected_cs.split(';') {
+                    let kv: Vec<&str> = part.split('=').map(|s| s.trim()).collect();
+                    if kv.len() == 2 {
+                        let key_lower = kv[0].to_lowercase();
+                        if key_lower == "data source" || key_lower == "server" || key_lower == "addr" || key_lower == "address" {
+                            target_server = kv[1].to_lowercase();
+                        } else if key_lower == "initial catalog" || key_lower == "database" {
+                            target_db = kv[1].to_lowercase();
+                        }
+                    }
+                }
+
+                if target_server.is_empty() || target_db.is_empty() {
+                    // Fallback to literal check if parsing fails
+                    if content.contains(&expected_cs) {
+                        return Ok("synced".to_string());
+                    } else {
+                        return Ok("mismatch".to_string());
+                    }
+                }
+
+                // Check if the file content contains both the resolved server and db (case-insensitive)
+                let content_lower = content.to_lowercase();
+                if content_lower.contains(&target_server) && content_lower.contains(&target_db) {
+                    Ok("synced".to_string())
+                } else {
+                    Ok("mismatch".to_string())
+                }
+            },
+            Err(e) => {
+                println!("[SyncCheck] Error reading config: {}", e);
+                Ok("missing".to_string())
+            }
+        }
+    } else {
+        Ok("missing".to_string())
+    }
+}
+
+#[tauri::command]
 pub fn dotnet_plain_command(mode: String, project_root: String, startup_project: String, build_config: Option<String>) -> Result<CommandResult, String> {
     let root = normalize_input_path(&project_root);
     let startup_abs = validate_startup_abs(&root, &startup_project)?;
-    let project_dir = startup_abs.parent().unwrap();
-    let startup_file = startup_abs.file_name().unwrap();
+    let project_dir = match startup_abs.parent() {
+        Some(p) => p,
+        None => return Err("Invalid project directory".to_string()),
+    };
+    let startup_file = match startup_abs.file_name() {
+        Some(f) => f,
+        None => return Err("Invalid project filename".to_string()),
+    };
 
     let mut cmd = new_command("dotnet");
     cmd.current_dir(project_dir);

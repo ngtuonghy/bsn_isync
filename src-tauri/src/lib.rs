@@ -16,7 +16,7 @@ pub use runner::{
     dotnet_run_start, dotnet_run_stop, dotnet_run_is_running, deploy_project_config,
     fetch_project_config, sync_asset, get_hostname, run_sql_only, prepare_sql_temp_file,
     prepare_batch_temp_file, open_file, check_environment, check_sql_connection,
-    invalidate_build_fingerprint,
+    invalidate_build_fingerprint, verify_debug_output_sync,
 };
 pub use utils::{CommandResult, normalize_path, normalize_input_path, validate_startup_abs,
     new_command, run_capture, get_build_config, build_default_config_template,
@@ -105,7 +105,8 @@ pub fn run() {
             sql_mod::sql_get_tables,
             sql_mod::sql_execute_async,
             runner::dotnet_plain_command,
-            runner::write_project_config_output
+            runner::write_project_config_output,
+            runner::verify_debug_output_sync
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

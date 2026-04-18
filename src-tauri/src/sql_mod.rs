@@ -133,12 +133,11 @@ pub async fn sql_get_tables(
         run_sql_query(&server, &database, &user, &password, use_windows_auth, query)
     }).await.map_err(|e| format!("Task error: {}", e))??;
     
-    let tables: Vec<SqlTable> = result.rows.iter().map(|row| {
-        let obj = row.as_object().unwrap();
-        SqlTable {
+    let tables: Vec<SqlTable> = result.rows.iter().filter_map(|row| {
+        row.as_object().map(|obj| SqlTable {
             name: obj.get("TABLE_NAME").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             schema: obj.get("TABLE_SCHEMA").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        }
+        })
     }).collect();
     
     Ok(tables)
