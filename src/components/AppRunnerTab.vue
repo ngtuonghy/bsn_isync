@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, Clock, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Code2, ListTree, Layers, FilePlus2, TerminalSquare, FileDown, Monitor, Target, Check, Settings2 } from "lucide-vue-next";
+import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, Clock, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Code2, ListTree, Layers, FilePlus2, TerminalSquare, FileDown, Monitor, Target, Check, Settings2, Box } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -567,48 +567,66 @@ onMounted(async () => {
                                     </SelectContent>
                                   </Select>
                                   
-                                  <TransitionGroup name="list" tag="div" class="space-y-1">
-                                    <div v-for="proj in runnerStore.discoveredProjects.filter((p: any) => runnerStore.selectedBuildProjects.has(p.root))" :key="proj.root" class="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border/30 bg-background/40 hover:bg-background hover:border-primary/20 transition-all">
-                                      <!-- Integrated Sync Status Indicator in the Hammer Icon Container -->
+                                  <TransitionGroup name="list-stagger" tag="div" class="space-y-1.5">
+                                    <div v-for="proj in runnerStore.discoveredProjects.filter((p: any) => runnerStore.selectedBuildProjects.has(p.root))" 
+                                         :key="proj.root" 
+                                         class="group relative flex items-stretch rounded-xl border transition-all duration-300 overflow-hidden cursor-pointer h-12 bg-background/40 border-primary/5 hover:border-primary/20 hover:bg-muted/30"
+                                    >
+                                      <!-- Sync Status Indicator Bar -->
                                       <TooltipProvider>
                                         <Tooltip>
                                           <TooltipTrigger as-child>
                                             <div 
-                                              class="size-5 rounded bg-gradient-to-br flex items-center justify-center border shrink-0 transition-all duration-300"
+                                              class="w-9 flex flex-col items-center justify-center border-r border-primary/5 transition-all duration-300"
                                               :class="[
                                                 !runnerStore.projectSyncStates[proj.root] || runnerStore.projectSyncStates[proj.root] === 'missing' 
-                                                  ? 'from-muted/20 to-muted/10 border-muted-foreground/10' 
+                                                  ? 'bg-muted/10 opacity-50' 
                                                   : runnerStore.projectSyncStates[proj.root] === 'synced'
-                                                    ? 'from-emerald-500/20 to-emerald-500/10 border-emerald-500/20 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
-                                                    : 'from-amber-500/20 to-amber-500/10 border-amber-500/20 shadow-[0_0_8px_rgba(245,158,11,0.1)]'
+                                                    ? 'bg-emerald-500/10'
+                                                    : 'bg-amber-500/10'
                                               ]"
                                             >
-                                              <Hammer 
-                                                class="size-2.5 transition-colors" 
+                                              <div 
+                                                class="size-5 rounded-md flex items-center justify-center transition-all duration-300"
                                                 :class="[
-                                                  !runnerStore.projectSyncStates[proj.root] || runnerStore.projectSyncStates[proj.root] === 'missing'
-                                                    ? 'text-muted-foreground/40'
+                                                  !runnerStore.projectSyncStates[proj.root] || runnerStore.projectSyncStates[proj.root] === 'missing' 
+                                                    ? 'text-muted-foreground/30' 
                                                     : runnerStore.projectSyncStates[proj.root] === 'synced'
-                                                      ? 'text-emerald-500'
-                                                      : 'text-amber-500'
+                                                      ? 'text-emerald-500 bg-emerald-500/10'
+                                                      : 'text-amber-500 bg-amber-500/10'
                                                 ]"
-                                              />
+                                              >
+                                                <Hammer class="size-3" />
+                                              </div>
                                             </div>
                                           </TooltipTrigger>
-                                          <TooltipContent side="left">
+                                          <TooltipContent side="right">
                                             <div class="text-[10px] font-medium">
                                               <span v-if="runnerStore.projectSyncStates[proj.root] === 'synced'">✅ Configuration Synchronized</span>
                                               <span v-else-if="runnerStore.projectSyncStates[proj.root] === 'mismatch'">️⚠️ Config Mismatch (Needs Rebuild)</span>
-                                              <span v-else>⚪ No config file in output path</span>
+                                              <span v-else>⚪ No config detected in output</span>
                                             </div>
                                           </TooltipContent>
                                         </Tooltip>
                                       </TooltipProvider>
     
-                                      <div class="flex-1 min-w-0 ml-1">
-                                        <div class="text-[12px] font-bold truncate text-foreground/80 group-hover:text-primary transition-colors">{{ proj.name }}</div>
+                                      <div class="flex-1 flex flex-col justify-center p-2.5 min-w-0 pr-10">
+                                        <div class="flex items-center gap-2 min-w-0">
+                                          <div class="text-[11px] font-black truncate text-foreground/80 group-hover:text-primary transition-colors leading-tight">{{ proj.name }}</div>
+                                        </div>
                                       </div>
-                                      <Button variant="ghost" size="icon" class="h-5 w-5 opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" @click.stop="runnerStore.toggleBuildProject(proj.root)" title="Remove"><X class="size-3" /></Button>
+                                      
+                                      <div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center opacity-0 group-hover:opacity-100 transition-all transform translate-x-1 group-hover:translate-x-0">
+                                        <Button 
+                                          variant="ghost" 
+                                          size="icon" 
+                                          class="h-7 w-7 rounded-lg hover:bg-destructive/10 hover:text-destructive text-destructive/50 transition-all" 
+                                          @click.stop="runnerStore.toggleBuildProject(proj.root)"
+                                          title="Remove Target"
+                                        >
+                                          <X class="size-3.5" />
+                                        </Button>
+                                      </div>
                                     </div>
                                   </TransitionGroup>
                                   
@@ -619,147 +637,271 @@ onMounted(async () => {
                               </div>
                             </div>
 
-                    <div class="space-y-3 pt-2 mt-2 border-t border-border/40">
-                          <div class="flex items-center justify-between px-0.5">
-                            <Label class="text-[10px] font-bold text-muted-foreground uppercase flex items-center gap-1.5">
-                              <TerminalSquare class="size-3.5 text-primary opacity-80" /> 
-                              <span class="opacity-80">Test Configuration</span>
-                            </Label>
-                            <div class="flex items-center bg-muted/50 p-0.5 rounded-md border shadow-inner">
+                    <div class="space-y-4 pt-4 mt-2 border-t border-primary/10">
+                          <div class="flex items-center justify-between px-1">
+                            <div class="flex items-center gap-2">
+                              <div class="p-1.5 rounded-lg bg-primary/10 text-primary">
+                                <TerminalSquare class="size-4" />
+                              </div>
+                              <div class="flex flex-col">
+                                <span class="text-[11px] font-black uppercase tracking-tight text-foreground/90">Test Configuration</span>
+                                <span class="text-[8px] font-bold text-muted-foreground/60 uppercase tracking-widest leading-none">Execution Mode</span>
+                              </div>
+                            </div>
+
+                            <div class="relative flex items-center bg-muted/30 p-1 rounded-[14px] border border-primary/5 shadow-inner-sm overflow-hidden" style="min-width: 180px;">
+                              <!-- Sliding Background Indicator -->
+                              <div 
+                                class="absolute top-1 bottom-1 left-1 rounded-xl bg-background shadow-md border border-primary/10 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                                :style="{ 
+                                  width: 'calc(50% - 4px)', 
+                                  transform: runnerStore.isExeTestMode ? 'translateX(100%)' : 'translateX(0)' 
+                                }"
+                              ></div>
+                              
                               <button @click="runnerStore.isExeTestMode = false" 
-                                      :class="!runnerStore.isExeTestMode ? 'bg-background shadow-sm text-foreground ring-1 ring-black/5 dark:ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
-                                      class="px-2.5 py-0.5 rounded-sm text-[9px] font-bold transition-all uppercase tracking-wider">
-                                BAT Mode
+                                      class="relative z-10 flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-colors duration-300"
+                                      :class="!runnerStore.isExeTestMode ? 'text-primary' : 'text-muted-foreground/60 hover:text-muted-foreground'">
+                                <Code2 class="size-3" />
+                                <span>BAT</span>
                               </button>
                               <button @click="runnerStore.isExeTestMode = true" 
-                                      :class="runnerStore.isExeTestMode ? 'bg-background shadow-sm text-foreground ring-1 ring-black/5 dark:ring-white/10' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'"
-                                      class="px-2.5 py-0.5 rounded-sm text-[9px] font-bold transition-all uppercase tracking-wider">
-                                EXE Mode
+                                      class="relative z-10 flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-colors duration-300"
+                                      :class="runnerStore.isExeTestMode ? 'text-primary' : 'text-muted-foreground/60 hover:text-muted-foreground'">
+                                <Box class="size-3" />
+                                <span>EXE</span>
                               </button>
                             </div>
                           </div>
 
-                          <div v-if="!runnerStore.isExeTestMode" class="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
-                            <div class="flex flex-col gap-2">
-                              <div class="flex items-center gap-1.5 p-1 rounded-xl border bg-card shadow-sm transition-all duration-200 group relative cursor-pointer" @click="runnerStore.activeBatConfigIndex = 0" :class="runnerStore.activeBatConfigIndex === 0 ? 'ring-1 ring-primary/50 border-primary/30 shadow-primary/5 bg-primary/5' : 'border-border/50 hover:border-border'">
-                                <div class="flex-1 relative flex items-center h-8 pl-[34px] pr-2 overflow-hidden" :title="runnerStore.batFilePath">
-                                  <div class="absolute left-2 flex items-center justify-center size-5 rounded-md bg-primary/10 text-primary border border-primary/20 shadow-sm">
-                                    <span class="text-[9px] font-black">1</span>
-                                  </div>
-                                  <div v-if="runnerStore.batFilePath" class="flex items-center truncate text-xs font-mono w-full cursor-pointer pointer-events-none">
-                                    <span class="truncate text-muted-foreground min-w-0">{{ runnerStore.batFilePath.replace(/[^/\\]+$/, '') }}</span>
-                                    <span class="font-bold text-primary shrink-0">{{ runnerStore.batFilePath.match(/[^/\\]+$/)?.[0] || runnerStore.batFilePath }}</span>
-                                  </div>
-                                  <div v-else class="text-xs font-mono text-muted-foreground/50 cursor-pointer pointer-events-none">.bat file</div>
-                                </div>
-                                <div class="flex items-center gap-0.5 pr-1 shrink-0 transition-opacity">
-                                  <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background hover:text-foreground shadow-sm border border-transparent hover:border-border/50 transition-all" @click.stop="() => runnerStore.browseBatFile()" title="Browse"><FolderOpen class="size-3.5" /></Button>
-                                  <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-primary/10 hover:text-primary text-primary/70 transition-all" @click.stop="() => { if(!runnerStore.batFiles) runnerStore.batFiles = []; runnerStore.batFiles.push(''); }" title="Add another .bat file"><Plus class="size-3.5" /></Button>
-                                </div>
+                          <div v-if="!runnerStore.isExeTestMode" class="space-y-3 animate-in fade-in slide-in-from-top-4 duration-500">
+                            <!-- Top-level Addition Trigger -->
+                            <Button 
+                              variant="outline" 
+                              class="w-full h-11 bg-background/50 border-primary/10 hover:bg-background hover:border-primary/40 hover:shadow-md text-xs font-bold transition-all px-4 rounded-xl shadow-sm group/add-bat flex items-center justify-between"
+                              @click="() => { 
+                                if (!runnerStore.batFilePath) {
+                                  runnerStore.browseBatFile();
+                                } else {
+                                  if(!runnerStore.batFiles) runnerStore.batFiles = [];
+                                  runnerStore.batFiles.push('');
+                                }
+                              }"
+                            >
+                              <div class="flex items-center gap-2">
+                                <Plus class="size-4 text-primary group-hover/add-bat:scale-110 transition-transform" />
+                                <span>Add Batch Script</span>
                               </div>
-                              <div v-for="(_bat, idx) in runnerStore.batFiles" :key="idx" class="flex items-center gap-1.5 p-1 rounded-xl border bg-card shadow-sm transition-all duration-200 group relative cursor-pointer" @click="runnerStore.activeBatConfigIndex = idx + 1" :class="runnerStore.activeBatConfigIndex === idx + 1 ? 'ring-1 ring-primary/50 border-primary/30 shadow-primary/5 bg-primary/5' : 'border-border/50 hover:border-border'">
-                                <div class="flex-1 relative flex items-center h-8 pl-[34px] pr-2 overflow-hidden" :title="runnerStore.batFiles[idx]">
-                                  <div class="absolute left-2 flex items-center justify-center size-5 rounded-md bg-primary/10 text-primary border border-primary/20 shadow-sm">
-                                    <span class="text-[9px] font-black">{{ idx + 2 }}</span>
-                                  </div>
-                                  <div v-if="runnerStore.batFiles[idx]" class="flex items-center truncate text-xs font-mono w-full cursor-pointer pointer-events-none">
-                                    <span class="truncate text-muted-foreground min-w-0">{{ runnerStore.batFiles[idx].replace(/[^/\\]+$/, '') }}</span>
-                                    <span class="font-bold text-primary shrink-0">{{ runnerStore.batFiles[idx].match(/[^/\\]+$/)?.[0] || runnerStore.batFiles[idx] }}</span>
-                                  </div>
-                                  <div v-else class="text-xs font-mono text-muted-foreground/50 cursor-pointer pointer-events-none">.bat file</div>
-                                </div>
-                                <div class="flex items-center gap-0.5 pr-1 shrink-0 transition-opacity">
-                                  <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background hover:text-foreground shadow-sm border border-transparent hover:border-border/50 transition-all" @click.stop="() => runnerStore.browseBatFile(idx)" title="Browse"><FolderOpen class="size-3.5" /></Button>
-                                  <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-destructive/10 hover:text-destructive text-destructive/70 transition-all" @click.stop="runnerStore.removeBatConfig(idx)" title="Remove"><Trash2 class="size-3.5" /></Button>
-                                </div>
-                              </div>
-                            </div>
-                            <div class="flex items-center justify-end pr-1 mt-1.5">
+                              <span class="text-[9px] font-black text-muted-foreground/40 uppercase tracking-widest">Select File</span>
+                            </Button>
 
+                            <div class="grid grid-cols-1 gap-2.5">
+                              <!-- Main BAT File Card (Uniform) -->
+                              <div 
+                                class="group relative flex items-stretch rounded-xl border transition-all duration-300 overflow-hidden cursor-pointer h-12 bg-background/40 border-primary/5 hover:border-primary/20 hover:bg-muted/30" 
+                                @click="runnerStore.activeBatConfigIndex = 0" 
+                                :class="runnerStore.activeBatConfigIndex === 0 
+                                  ? 'bg-primary/5 border-primary/30 shadow-primary/5 ring-1 ring-primary/20' 
+                                  : ''"
+                              >
+                                <!-- Index Indicator -->
+                                <div class="w-9 flex flex-col items-center justify-center border-r border-primary/5 transition-colors"
+                                     :class="runnerStore.activeBatConfigIndex === 0 ? 'bg-primary/10' : 'bg-muted/10 group-hover:bg-primary/5'">
+                                  <span class="text-[10px] font-black" :class="runnerStore.activeBatConfigIndex === 0 ? 'text-primary' : 'text-muted-foreground/40'">01</span>
+                                </div>
+
+                                <div class="flex-1 flex flex-col justify-center p-2.5 min-w-0 pr-10">
+                                  <div class="flex items-center gap-2 min-w-0">
+                                    <div class="size-6 rounded-lg bg-primary/5 border border-primary/10 flex items-center justify-center shrink-0">
+                                      <TerminalSquare class="size-3.5 text-primary" />
+                                    </div>
+                                    <div v-if="runnerStore.batFilePath" class="flex items-center text-[11px] font-mono leading-tight truncate min-w-0">
+                                      <span class="opacity-40 truncate">{{ runnerStore.batFilePath.replace(/[^/\\]+$/, '') }}</span>
+                                      <span class="font-black text-primary whitespace-nowrap">{{ runnerStore.batFilePath.match(/[^/\\]+$/)?.[0] }}</span>
+                                    </div>
+                                    <span v-else class="text-[11px] font-bold italic text-muted-foreground/30">Entry point script...</span>
+                                  </div>
+                                </div>
+
+                                <div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all transform translate-x-1 group-hover:translate-x-0">
+                                  <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg bg-background/80 border shadow-sm hover:text-primary transition-all" @click.stop="() => runnerStore.browseBatFile()" title="Browse File">
+                                    <FolderOpen class="size-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <!-- Chained BAT Files -->
+                              <TransitionGroup name="list-stagger">
+                                <div v-for="(_bat, idx) in runnerStore.batFiles" :key="idx" 
+                                     class="group relative flex items-stretch rounded-xl border transition-all duration-300 overflow-hidden cursor-pointer h-12 bg-background/40 border-primary/5 hover:border-primary/20 hover:bg-muted/30" 
+                                     @click="runnerStore.activeBatConfigIndex = idx + 1" 
+                                     :class="runnerStore.activeBatConfigIndex === idx + 1 
+                                      ? 'bg-primary/5 border-primary/40 shadow-primary/5 ring-1 ring-primary/20' 
+                                      : ''"
+                                >
+                                  <div class="w-9 flex flex-col items-center justify-center border-r border-primary/5 transition-colors"
+                                       :class="runnerStore.activeBatConfigIndex === idx + 1 ? 'bg-primary/10' : 'bg-muted/10 group-hover:bg-primary/5'">
+                                    <span class="text-[10px] font-black" :class="runnerStore.activeBatConfigIndex === idx + 1 ? 'text-primary' : 'text-muted-foreground/40'">{{ (idx + 2).toString().padStart(2, '0') }}</span>
+                                  </div>
+
+                                  <div class="flex-1 flex flex-col justify-center p-2.5 min-w-0 pr-10">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                      <div class="size-6 rounded-lg bg-primary/5 border border-primary/10 flex items-center justify-center shrink-0">
+                                        <TerminalSquare class="size-3.5 text-primary/70" />
+                                      </div>
+                                      <div v-if="runnerStore.batFiles[idx]" class="flex items-center text-[11px] font-mono leading-tight truncate min-w-0">
+                                        <span class="opacity-40 truncate">{{ runnerStore.batFiles[idx].replace(/[^/\\]+$/, '') }}</span>
+                                        <span class="font-black text-primary/90 whitespace-nowrap">{{ runnerStore.batFiles[idx].match(/[^/\\]+$/)?.[0] }}</span>
+                                      </div>
+                                      <span v-else class="text-[11px] font-bold italic text-muted-foreground/30">Select script...</span>
+                                    </div>
+                                  </div>
+
+                                  <div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all transform translate-x-1 group-hover:translate-x-0">
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg bg-background/80 backdrop-blur-sm border shadow-sm hover:text-primary transition-all" @click.stop="() => runnerStore.browseBatFile(idx)" title="Browse File">
+                                      <FolderOpen class="size-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg bg-destructive/10 text-destructive border border-destructive/20 shadow-sm hover:scale-105 transition-all" @click.stop="runnerStore.removeBatConfig(idx)" title="Remove Script">
+                                      <Trash2 class="size-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              </TransitionGroup>
                             </div>
                           </div>
                           
-                          <div class="space-y-1.5 pb-2">
-                            <div class="flex flex-col mb-2 px-1">
-                              <Label class="text-[9px] font-bold text-muted-foreground uppercase mb-1.5 pl-0.5 flex items-center gap-1.5">
-                                <span class="opacity-70">{{ runnerStore.isExeTestMode ? 'EXE ARGUMENTS' : 'BAT ARGUMENTS' }}</span> 
-                                <span class="text-[8px] opacity-40 normal-case font-normal leading-none">{{ runnerStore.isExeTestMode ? '(passed to .exe during TEST)' : '(passed to .bat during TEST)' }}</span>
-                              </Label>
+                          <div class="space-y-1.5 pt-1">
+                            <div class="flex flex-col px-1">
+                              <div class="flex items-center justify-between mb-1 pb-0.5 border-b border-primary/5">
+                                <Label class="text-[10px] font-black text-foreground/70 uppercase tracking-tighter flex items-center gap-1.5">
+                                  <div class="p-0.5 rounded bg-muted/50">
+                                    <TerminalSquare class="size-3 text-primary" />
+                                  </div>
+                                  <span>{{ runnerStore.isExeTestMode ? 'EXE ARGUMENTS' : 'BAT ARGUMENTS' }}</span>
+                                </Label>
+                                <span class="text-[8px] font-bold text-muted-foreground/40 uppercase tracking-widest">Workbench</span>
+                              </div>
                               
-                              <div v-if="!runnerStore.isExeTestMode" class="relative flex flex-col group/args animate-in fade-in slide-in-from-right-2 duration-300">
-                                <div class="flex items-center gap-2 mb-2 w-full">
-                                  <Select v-model="runnerStore.currentBatArgId" @update:model-value="(v: any) => runnerStore.onArgSnippetSelected('bat', v)" :disabled="runnerStore.currentBatArgSnippets.length === 0">
-                                    <SelectTrigger class="h-7 text-xs font-mono bg-muted/50 border-primary/20 hover:border-primary/40 focus:ring-primary/20 transition-colors w-full flex-1">
-                                      <SelectValue placeholder="Select Argument" class="truncate" />
-                                    </SelectTrigger>
-                                    <SelectContent class="bg-background/95 backdrop-blur-xl border-primary/20">
-                                      <div v-for="snippet in runnerStore.currentBatArgSnippets" :key="snippet.id" class="flex items-center pl-2 pr-1 gap-2 hover:bg-muted/50">
-                                        <SelectItem :value="snippet.id" class="text-[10px] font-medium py-2 flex-1 cursor-pointer">
-                                          {{ snippet.name }}
-                                        </SelectItem>
-                                      </div>
-                                    </SelectContent>
-                                  </Select>
-                                  <div class="flex items-center gap-1 transition-opacity">
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="runnerStore.startNamingArgSnippet('create', 'bat')" title="New Argument">
-                                      <Plus class="size-3.5" />
+                              <div v-if="!runnerStore.isExeTestMode" class="relative flex flex-col group/args gap-1 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                                <div class="flex items-center gap-1 w-full">
+                                  <div class="flex-1 relative">
+                                    <Select v-model="runnerStore.currentBatArgId" @update:model-value="(v: any) => runnerStore.onArgSnippetSelected('bat', v)" :disabled="runnerStore.currentBatArgSnippets.length === 0">
+                                      <SelectTrigger class="h-8 text-[11px] font-bold bg-background/50 border-primary/10 hover:border-primary/30 focus:ring-primary/20 transition-all w-full rounded-xl shadow-xs">
+                                        <SelectValue placeholder="Select Script Argument..." class="truncate" />
+                                      </SelectTrigger>
+                                      <SelectContent class="bg-card/95 backdrop-blur-2xl border-primary/10 rounded-xl shadow-2xl">
+                                        <div v-for="snippet in runnerStore.currentBatArgSnippets" :key="snippet.id" class="flex items-center px-1 py-0.5">
+                                          <SelectItem :value="snippet.id" class="text-[10px] font-bold py-2.5 flex-1 cursor-pointer rounded-lg">
+                                            {{ snippet.name }}
+                                          </SelectItem>
+                                        </div>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div class="flex items-center bg-muted/30 p-1 rounded-xl border border-primary/10 shadow-inner-sm">
+                                    <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all" @click="runnerStore.startNamingArgSnippet('create', 'bat')" title="New Argument">
+                                      <Plus class="size-3" />
                                     </Button>
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="runnerStore.startNamingArgSnippet('rename', 'bat')" :disabled="runnerStore.currentBatArgSnippets.length === 0" title="Rename">
-                                      <Pencil class="size-3.5" />
+                                    <div class="w-px h-3 bg-primary/10 mx-0.5"></div>
+                                    <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all" @click="runnerStore.startNamingArgSnippet('rename', 'bat')" :disabled="runnerStore.currentBatArgSnippets.length === 0" title="Rename">
+                                      <Pencil class="size-3" />
                                     </Button>
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-destructive hover:text-destructive-foreground text-destructive/80" @click="runnerStore.deleteActiveArgSnippet('bat')" :disabled="runnerStore.currentBatArgSnippets.length === 0" title="Delete">
-                                      <Trash2 class="size-3.5" />
+                                    <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-destructive/10 text-destructive/70 hover:text-destructive transition-all" @click="runnerStore.deleteActiveArgSnippet('bat')" :disabled="runnerStore.currentBatArgSnippets.length === 0" title="Delete">
+                                      <Trash2 class="size-3" />
                                     </Button>
                                   </div>
                                 </div>
-                                <div class="relative flex items-center group/args w-full">
-                                  <Input ref="argsInputRefBat" v-model="runnerStore.currentBatArgs" @update:model-value="(v: any) => { const s = runnerStore.runArgSnippets.find(x => x.id === runnerStore.currentBatArgId); if(s) s.content = v; }" placeholder="-debug ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
-                                  <div class="absolute right-1 flex items-center gap-0.5 transition-opacity">
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="runnerStore.insertTimePlaceholder">
-                                      <Clock class="size-3" />
-                                    </Button>
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="runnerStore.insertHostnamePlaceholder">
-                                      <Monitor class="size-3" />
-                                    </Button>
+
+                                <div class="group/input relative flex items-center w-full">
+                                  <div class="absolute inset-0 bg-primary/5 blur-xl opacity-0 group-focus-within/input:opacity-100 transition-opacity"></div>
+                                  <Input 
+                                    ref="argsInputRefBat" 
+                                    v-model="runnerStore.currentBatArgs" 
+                                    @update:model-value="(v: any) => { const s = runnerStore.runArgSnippets.find(x => x.id === runnerStore.currentBatArgId); if(s) s.content = v; }" 
+                                    placeholder="Enter parameters (e.g. -debug -v)..." 
+                                    class="relative h-9 pr-24 pl-3 text-[12px] font-mono bg-background/30 border-primary/10 transition-all focus-visible:ring-primary/20 focus-visible:bg-background focus-visible:border-primary/30 rounded-xl shadow-xs selection:bg-primary/30" 
+                                  />
+                                  <div class="absolute right-1 flex items-center gap-1">
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger as-child>
+                                          <Button variant="ghost" size="sm" class="h-6 px-1.5 font-bold text-[8px] text-muted-foreground/60 hover:text-primary hover:bg-primary/10 transition-all rounded-md border border-transparent hover:border-primary/10" @click="runnerStore.insertTimePlaceholder">
+                                            {time}
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>ISO Timestamp</TooltipContent>
+                                      </Tooltip>
+                                      <Tooltip>
+                                        <TooltipTrigger as-child>
+                                          <Button variant="ghost" size="sm" class="h-6 px-1.5 font-bold text-[8px] text-muted-foreground/60 hover:text-primary hover:bg-primary/10 transition-all rounded-md border border-transparent hover:border-primary/10" @click="runnerStore.insertHostnamePlaceholder">
+                                            {host}
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Hostname</TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
                                   </div>
                                 </div>
                               </div>
                               
-                              <div v-else class="relative flex flex-col group/args animate-in fade-in slide-in-from-right-2 duration-300">
-                                <div class="flex items-center gap-2 mb-2 w-full">
-                                  <Select v-model="runnerStore.activeExeArgId" @update:model-value="(v: any) => runnerStore.onArgSnippetSelected('exe', v)" :disabled="runnerStore.exeArgSnippets.length === 0">
-                                    <SelectTrigger class="h-7 text-xs font-mono bg-muted/50 border-primary/20 hover:border-primary/40 focus:ring-primary/20 transition-colors w-full flex-1">
-                                      <SelectValue placeholder="Select Argument" class="truncate" />
-                                    </SelectTrigger>
-                                    <SelectContent class="bg-background/95 backdrop-blur-xl border-primary/20">
-                                      <div v-for="snippet in runnerStore.exeArgSnippets" :key="snippet.id" class="flex items-center pl-2 pr-1 gap-2 hover:bg-muted/50">
-                                        <SelectItem :value="snippet.id" class="text-[10px] font-medium py-2 flex-1 cursor-pointer">
-                                          {{ snippet.name }}
-                                        </SelectItem>
-                                      </div>
-                                    </SelectContent>
-                                  </Select>
-                                  <div class="flex items-center gap-1 transition-opacity">
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="runnerStore.startNamingArgSnippet('create', 'exe')" title="New Argument">
-                                      <Plus class="size-3.5" />
+                              <div v-else class="relative flex flex-col group/args gap-1 animate-in fade-in slide-in-from-top-2 duration-500">
+                                <div class="flex items-center gap-1 w-full">
+                                  <div class="flex-1 relative">
+                                    <Select v-model="runnerStore.activeExeArgId" @update:model-value="(v: any) => runnerStore.onArgSnippetSelected('exe', v)" :disabled="runnerStore.exeArgSnippets.length === 0">
+                                      <SelectTrigger class="h-8 text-[11px] font-bold bg-background/50 border-primary/10 hover:border-primary/30 focus:ring-primary/20 transition-all w-full rounded-xl shadow-xs">
+                                        <SelectValue placeholder="Select Application parameters..." class="truncate" />
+                                      </SelectTrigger>
+                                      <SelectContent class="bg-card/95 backdrop-blur-2xl border-primary/10 rounded-xl shadow-2xl">
+                                        <div v-for="snippet in runnerStore.exeArgSnippets" :key="snippet.id" class="flex items-center px-1 py-0.5">
+                                          <SelectItem :value="snippet.id" class="text-[10px] font-bold py-2.5 flex-1 cursor-pointer rounded-lg">
+                                            {{ snippet.name }}
+                                          </SelectItem>
+                                        </div>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div class="flex items-center bg-muted/30 p-1 rounded-xl border border-primary/10 shadow-inner-sm">
+                                    <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all" @click="runnerStore.startNamingArgSnippet('create', 'exe')" title="New Argument">
+                                      <Plus class="size-3" />
                                     </Button>
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-background text-muted-foreground" @click="runnerStore.startNamingArgSnippet('rename', 'exe')" :disabled="runnerStore.exeArgSnippets.length === 0" title="Rename">
-                                      <Pencil class="size-3.5" />
+                                    <div class="w-px h-3 bg-primary/10 mx-0.5"></div>
+                                    <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-background text-muted-foreground hover:text-primary transition-all" @click="runnerStore.startNamingArgSnippet('rename', 'exe')" :disabled="runnerStore.exeArgSnippets.length === 0" title="Rename">
+                                      <Pencil class="size-3" />
                                     </Button>
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 rounded-lg hover:bg-destructive hover:text-destructive-foreground text-destructive/80" @click="runnerStore.deleteActiveArgSnippet('exe')" :disabled="runnerStore.exeArgSnippets.length === 0" title="Delete">
-                                      <Trash2 class="size-3.5" />
+                                    <Button variant="ghost" size="icon" class="h-6 w-6 rounded-md hover:bg-destructive/10 text-destructive/70 hover:text-destructive transition-all" @click="runnerStore.deleteActiveArgSnippet('exe')" :disabled="runnerStore.exeArgSnippets.length === 0" title="Delete">
+                                      <Trash2 class="size-3" />
                                     </Button>
                                   </div>
                                 </div>
-                                <div class="relative flex items-center group/args w-full">
-                                  <Input ref="argsInputRefExe" v-model="runnerStore.exeArgs" @update:model-value="(v: any) => { const s = runnerStore.exeArgSnippets.find(x => x.id === runnerStore.activeExeArgId); if(s) s.content = v; }" placeholder="1 2 3 4 5 ..." class="pr-20 selection:bg-primary/30 selection:text-primary" />
-                                  <div class="absolute right-1 flex items-center gap-0.5 transition-opacity">
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {time}" @click="runnerStore.insertTimePlaceholder">
-                                      <Clock class="size-3" />
-                                    </Button>
-                                    <Button variant="ghost" size="icon" class="h-7 w-7 text-muted-foreground hover:text-primary" title="Insert {hostname}" @click="runnerStore.insertHostnamePlaceholder">
-                                      <Monitor class="size-3" />
-                                    </Button>
+
+                                <div class="group/input relative flex items-center w-full">
+                                  <div class="absolute inset-0 bg-primary/5 blur-xl opacity-0 group-focus-within/input:opacity-100 transition-opacity"></div>
+                                  <Input 
+                                    ref="argsInputRefExe" 
+                                    v-model="runnerStore.exeArgs" 
+                                    @update:model-value="(v: any) => { const s = runnerStore.exeArgSnippets.find(x => x.id === runnerStore.activeExeArgId); if(s) s.content = v; }" 
+                                    placeholder="Enter parameters (e.g. 100 200)..." 
+                                    class="relative h-9 pr-24 pl-3 text-[12px] font-mono bg-background/30 border-primary/10 transition-all focus-visible:ring-primary/20 focus-visible:bg-background focus-visible:border-primary/30 rounded-xl shadow-xs selection:bg-primary/30" 
+                                  />
+                                  <div class="absolute right-1 flex items-center gap-1">
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger as-child>
+                                          <Button variant="ghost" size="sm" class="h-6 px-1.5 font-bold text-[8px] text-muted-foreground/60 hover:text-primary hover:bg-primary/10 transition-all rounded-md border border-transparent hover:border-primary/10" @click="runnerStore.insertTimePlaceholder">
+                                            {time}
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>ISO Timestamp</TooltipContent>
+                                      </Tooltip>
+                                      <Tooltip>
+                                        <TooltipTrigger as-child>
+                                          <Button variant="ghost" size="sm" class="h-6 px-1.5 font-bold text-[8px] text-muted-foreground/60 hover:text-primary hover:bg-primary/10 transition-all rounded-md border border-transparent hover:border-primary/10" @click="runnerStore.insertHostnamePlaceholder">
+                                            {host}
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Hostname</TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
                                   </div>
                                 </div>
                               </div>
