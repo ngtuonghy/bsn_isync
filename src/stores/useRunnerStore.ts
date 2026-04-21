@@ -174,9 +174,9 @@ export const useRunnerStore = defineStore('runner', () => {
   });
   const autoDeployConfig = ref(false);
   const deployPath = ref('');
-  const customMsbuildPath = ref('');
-  const extraBuildArgs = ref('/p:Configuration=Debug');
-  const autoRebuild = ref(true);
+  const customMsbuildPath = ref(localStorage.getItem('bsn_isync:global_msbuild_path') || '');
+  const extraBuildArgs = ref(localStorage.getItem('bsn_isync:global_extra_build_args') || '/p:Configuration=Debug');
+  const autoRebuild = ref(localStorage.getItem('bsn_isync:global_auto_rebuild') === 'false' ? false : true);
 
   const discoveredProjects = ref<Array<{
     name: string;
@@ -501,10 +501,8 @@ const getTargetProjectName = (targetProjectPath: string) => {
     isExeTestMode.value = setup.isExeTestMode || false;
     deployPath.value = toAbs(setup.deployPath || '');
     sqlSetupPath.value = setup.sqlSetupPath || '';
-    console.log('[RunnerStore] applySetupToRunner: Setting customMsbuildPath to:', setup.customMsbuildPath || 'EMPTY');
-    customMsbuildPath.value = setup.customMsbuildPath || '';
-    extraBuildArgs.value = setup.extraBuildArgs || '';
-    autoRebuild.value = setup.autoRebuild ?? true;
+    
+    // MSBuild settings are now global, skipping apply from profile
     
     // Restore side effects of project selection
     if (projectRoot.value) {
@@ -708,9 +706,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     setup.deployPath = toRel(deployPath.value);
     setup.targetConfigs = JSON.parse(JSON.stringify(targetConfigs.value || {}));
     setup.selectedBuildProjects = [...selectedBuildProjects.value];
-    setup.customMsbuildPath = customMsbuildPath.value;
-    setup.extraBuildArgs = extraBuildArgs.value;
-    setup.autoRebuild = autoRebuild.value;
+    // MSBuild settings are now global, skipping save to profile
     
     const setupForCompare = { ...setup, updatedAt: setupProfiles.value[idx].updatedAt };
     const newSetupStr = JSON.stringify(cleanObj(setupForCompare), Object.keys(cleanObj(setupForCompare)).sort());
@@ -1149,32 +1145,6 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
   }
 
-  async function checkProjectSyncs() {
-    if (selectedBuildProjects.value.size === 0) return;
-
-    const expectedCs = `Data Source=${sqlServer.value};Initial Catalog=${sqlDatabase.value}`;
-
-    for (const rootPath of selectedBuildProjects.value) {
-      const proj = discoveredProjects.value.find(p => p.root === rootPath);
-      if (!proj) continue;
-
-      try {
-        const fullPath = proj.root + '\\' + proj.startupProject;
-        const state = await invoke<string>('verify_debug_output_sync', {
-          projectPath: fullPath,
-          expectedCs: expectedCs
-        }).catch(err => {
-           console.error(`[SyncCheck] RPC Error for ${proj.name}:`, err);
-           return 'missing';
-        });
-        
-        projectSyncStates.value[proj.root] = state as any;
-      } catch (e) {
-        console.error('[SyncCheck] Outer catch failed for', proj.name, e);
-      }
-    }
-  }
-
   // Automatic verification on selection change or SQL change
   watch(
     [() => Array.from(selectedBuildProjects.value), () => sqlServer.value, () => sqlDatabase.value],
@@ -1185,6 +1155,17 @@ const getTargetProjectName = (targetProjectPath: string) => {
     },
     { immediate: true }
   );
+
+  // Global MSBuild Settings persistence
+  watch(customMsbuildPath, (val) => {
+    localStorage.setItem('bsn_isync:global_msbuild_path', val);
+  });
+  watch(extraBuildArgs, (val) => {
+    localStorage.setItem('bsn_isync:global_extra_build_args', val);
+  });
+  watch(autoRebuild, (val) => {
+    localStorage.setItem('bsn_isync:global_auto_rebuild', String(val));
+  });
 
   async function dotnet(cmd: 'restore' | 'build' | 'run', target: 'exe' | 'bat' = 'exe', overrideArgs?: string) {
     const loadingKey = cmd === 'run' ? target : cmd;
@@ -2068,18 +2049,7 @@ ${s.content}
             autoWatchTargetTest: current.autoWatchTargetTest, 
             autoWatchTargetRun: current.autoWatchTargetRun, 
             batFilePath: current.batFilePath, 
-            batFiles: current.batFiles,
-            sqlServer: current.sqlServer,
-            sqlDatabase: current.sqlDatabase,
-            sqlUser: current.sqlUser,
-            sqlPassword: current.sqlPassword,
-            useWindowsAuth: current.useWindowsAuth,
-            configTemplate: current.configTemplate,
-            runConfigTemplate: current.runConfigTemplate,
-            connectionStringTemplate: current.connectionStringTemplate,
-            customMsbuildPath: current.customMsbuildPath,
-            extraBuildArgs: current.extraBuildArgs,
-            autoRebuild: current.autoRebuild ?? true
+            batFiles: current.batFiles
           };
         } else {
           setupProfiles.value.push({ 
@@ -2089,10 +2059,7 @@ ${s.content}
             forceUnicode: true, 
             autoWatchBat: true, 
             autoWatchTargetTest: false, 
-            autoWatchTargetRun: false,
-            customMsbuildPath: '',
-            extraBuildArgs: '/p:Configuration=Debug',
-            autoRebuild: true
+            autoWatchTargetRun: false
           });
         }
         

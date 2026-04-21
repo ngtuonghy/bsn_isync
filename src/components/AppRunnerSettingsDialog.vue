@@ -22,7 +22,6 @@ async function browseMsbuild() {
   }) as string | null;
   if (picked) {
     runnerStore.customMsbuildPath = picked;
-    runnerStore.saveCurrentToSelectedSetupProfile();
     // Re-check environment to update found status
     uiStore.checkEnv(picked);
   }
@@ -131,12 +130,12 @@ async function browseMsbuild() {
             Cancel
           </Button>
           <div class="flex items-center gap-3">
-             <div class="flex flex-col items-end opacity-20 mr-2">
-                <span class="text-[7px] text-muted-foreground font-black uppercase tracking-[0.25em]">Build Profile</span>
-                <span class="text-[6px] text-muted-foreground font-bold uppercase tracking-[0.4em] -mt-1">Synced & Persistent</span>
+             <div class="flex flex-col items-end opacity-40 mr-2">
+                <span class="text-[7px] text-primary font-black uppercase tracking-[0.25em]">Global Config</span>
+                <span class="text-[6px] text-muted-foreground font-bold uppercase tracking-[0.4em] -mt-1">Applied to All Profiles</span>
              </div>
-             <Button class="h-11 px-8 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-xl shadow-primary/20 bg-primary hover:bg-primary/90 transition-all transform hover:scale-[1.02] active:scale-95" @click="() => { runnerStore.saveCurrentToSelectedSetupProfile(); uiStore.isRunnerSettingsOpen = false; }">
-               Save Configuration
+             <Button class="h-11 px-8 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-xl shadow-primary/20 bg-primary hover:bg-primary/90 transition-all transform hover:scale-[1.02] active:scale-95" @click="() => { uiStore.isRunnerSettingsOpen = false; }">
+               Close Settings
              </Button>
           </div>
         </div>
