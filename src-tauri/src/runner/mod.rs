@@ -943,8 +943,11 @@ pub fn dotnet_run_start(
     } else {
         &target_abs
     };
-    let project_dir = run_project_abs.parent().unwrap();
-    let startup_file_name = run_project_abs.file_name().unwrap().to_str().unwrap();
+    let project_dir = run_project_abs.parent().ok_or_else(|| format!("Cannot determine parent directory of project path: {}", run_project_abs.display()))?;
+    let startup_file_name = run_project_abs.file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("Cannot determine startup project filename: {}", run_project_abs.display()))?;
+    
     let source_exe_name = startup_file_name.replace(".csproj", ".exe");
     
     let mut custom_out = None;

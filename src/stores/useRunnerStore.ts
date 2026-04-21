@@ -912,24 +912,31 @@ const getTargetProjectName = (targetProjectPath: string) => {
 
 
   async function loadConfigsForCurrentProject() {
-    if (!projectRoot.value || !startupProject.value) return;
+    let effectiveRoot = projectRoot.value;
+    let effectiveStartup = startupProject.value;
+
+    if ((!effectiveRoot || !effectiveStartup) && selectedBuildProjects.value.size > 0) {
+      const firstRoot = Array.from(selectedBuildProjects.value)[0];
+      const proj = discoveredProjects.value.find(p => p.root === firstRoot);
+      if (proj) {
+        effectiveRoot = proj.root;
+        effectiveStartup = proj.startupProject;
+      }
+    }
+
+    if (!effectiveRoot || !effectiveStartup) return;
     
     try {
-      const targetContent = await invoke('fetch_project_config', {
-        projectPath: projectRoot.value + '\\' + startupProject.value,
+      const targetContent = await invoke<string>('fetch_project_config', {
+        projectPath: effectiveRoot + '\\' + effectiveStartup,
       }).catch(e => { console.warn('Failed to fetch target config', e); return null; });
       
       if (targetContent) {
-        configTemplate.value = targetContent as string;
+        configTemplate.value = targetContent;
       }
       
-      const runContent = await invoke('fetch_project_config', {
-        projectPath: 'D:\\workspace\\invoice\\Arkbell.Console\\Arkbell.Console.ReceiveBatchAction\\Arkbell.Console.ReceiveBatchAction.csproj',
-      }).catch(e => { console.warn('Failed to fetch run config', e); return null; });
-
-      if (runContent) {
-        runConfigTemplate.value = runContent as string;
-      }
+      // Auto-fetch run config if possible (hardcoded legacy path or similar logic could go here)
+      // For now, we only update the main template from inferred target
       
       applyConfigSyncToTemplates();
     } catch (e: any) {
@@ -1040,7 +1047,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     if (nRun !== runConfigTemplate.value) runConfigTemplate.value = nRun;
   }
 
-  async function runDotnetAndCollect(mode: 'restore' | 'build') {
+  async function runDotnetAndCollect(mode: 'restore' | 'build', silent = false) {
     const allProjects: { projectPath: string; config: string }[] = [];
     
     // Build only selected projects in checkbox
@@ -1055,8 +1062,8 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
     
     if (allProjects.length === 0) {
-      console.log('[build] No targets selected, skipping build');
-      return;
+      console.log(`[${mode}] No targets selected, skipping ${mode}`);
+      return false;
     }
 
     if (mode === 'build') buildStatus.value = 'building';
@@ -1077,7 +1084,9 @@ const getTargetProjectName = (targetProjectPath: string) => {
           });
 
           if (result.code !== 0) {
-              toast.error(`Build failed for ${proj.projectPath}`, { description: result.stderr || result.stdout });
+              if (!silent) {
+                toast.error(`Build failed for ${proj.projectPath}`, { description: result.stderr || result.stdout });
+              }
               if (mode === 'build') continue;
           }
 
@@ -1113,10 +1122,11 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
     
     await checkProjectSyncs();
+    return true;
   }
 
   async function checkProjectSyncs() {
-    if (!projectRoot.value) return;
+    // We no longer require a global projectRoot since we check selected targets directly.
     
     const targets = discoveredProjects.value.filter(p => selectedBuildProjects.value.has(p.root));
     if (targets.length === 0) return;
@@ -1168,6 +1178,16 @@ const getTargetProjectName = (targetProjectPath: string) => {
   });
 
   async function dotnet(cmd: 'restore' | 'build' | 'run', target: 'exe' | 'bat' = 'exe', overrideArgs?: string) {
+      if (target === 'bat') {
+        if (!batFilePath.value && (!batFiles.value || batFiles.value.length === 0)) {
+           toast.error('Batch File Missing', {
+             description: 'Please select a BAT file to run.',
+             duration: 5000
+           });
+           return;
+        }
+      }
+
     const loadingKey = cmd === 'run' ? target : cmd;
     loadingTarget.value = loadingKey;
     
@@ -1176,18 +1196,30 @@ const getTargetProjectName = (targetProjectPath: string) => {
       aliasExeName.value += '.exe';
     }
     if (cmd === 'restore') {
-      await runDotnetAndCollect('restore');
+      const started = await runDotnetAndCollect('restore');
+      if (!started) {
+        toast.info('No targets selected', {
+          description: 'Please check at least one project in the build target list.',
+          duration: 4000
+        });
+      }
       loadingTarget.value = null;
       return;
     } else if (cmd === 'build') {
-      await runDotnetAndCollect('build');
+      const started = await runDotnetAndCollect('build');
+      if (!started) {
+        toast.info('No targets selected', {
+          description: 'Please check at least one project in the build target list.',
+          duration: 4000
+        });
+      }
       loadingTarget.value = null;
       return;
     }
     
     // Build all projects before running (for both bat and exe targets)
     if (autoRebuild.value) {
-      await runDotnetAndCollect('build');
+      await runDotnetAndCollect('build', true);
     }
     
     const isTestButton = cmd === 'run' && target === 'bat';
@@ -1316,9 +1348,20 @@ const getTargetProjectName = (targetProjectPath: string) => {
           }
         }
 
+        let effectiveProjectPath = projectRoot.value + '\\' + startupProject.value;
+        
+        // If startup project is missing from UI, infer it from build targets if possible
+        if ((!projectRoot.value || !startupProject.value) && selectedBuildProjects.value.size > 0) {
+          const firstRoot = Array.from(selectedBuildProjects.value)[0];
+          const proj = discoveredProjects.value.find(p => p.root === firstRoot);
+          if (proj) {
+            effectiveProjectPath = proj.root + '\\' + proj.startupProject;
+          }
+        }
+
         await invoke('dotnet_run_start', {
           request: {
-            projectPath: projectRoot.value + '\\' + startupProject.value,
+            projectPath: effectiveProjectPath,
             customMsbuildPath: customMsbuildPath.value || null,
             urls: urls.value || null,
             buildConfig: config.value,
@@ -1362,8 +1405,15 @@ const getTargetProjectName = (targetProjectPath: string) => {
     loadingTarget.value = 'rebuild';
     saveCurrentToSelectedSetupProfile();
     try {
-      await runDotnetAndCollect('build');
-      toast.success('All projects rebuilt with synchronized configs!');
+      const started = await runDotnetAndCollect('build');
+      if (!started) {
+        toast.info('No targets selected', {
+          description: 'Please check at least one project in the build target list.',
+          duration: 4000
+        });
+      } else {
+        toast.success('All projects rebuilt with synchronized configs!');
+      }
     } catch (e: any) {
       toast.error(String(e));
     } finally {
