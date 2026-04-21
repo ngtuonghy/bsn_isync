@@ -20,6 +20,7 @@ import {
 import ProfileHistory from "@/components/ProfileHistory.vue";
 import HotkeyManager from "@/components/HotkeyManager.vue";
 import SqlEditor from "@/components/SqlEditor.vue";
+import AppRunnerSettingsDialog from "@/components/AppRunnerSettingsDialog.vue";
 import { useUiStore } from '@/stores/useUiStore';
 import { useRunnerStore } from '@/stores/useRunnerStore';
 import { useBacklogStore } from '@/stores/useBacklogStore';
@@ -215,4 +216,6 @@ const backlogStore = useBacklogStore();
         </div>
       </DialogContent>
     </Dialog>
+    
+    <AppRunnerSettingsDialog />
 </template>

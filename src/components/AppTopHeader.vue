@@ -11,6 +11,7 @@ import {
   BellOff,
   Settings2,
   Keyboard,
+  Hammer,
 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import BacklogAuthPanel from "@/components/BacklogAuthPanel.vue";
@@ -113,7 +114,32 @@ function handleOAuthLogin() {
                         @click="openUrl(tool.downloadUrl)">
                   Install
                 </Button>
-                <div v-else class="px-2 py-0.5 rounded-md bg-green-500/10 text-green-500 text-[8px] font-black uppercase tracking-tighter">OK</div>
+                <div v-else class="flex items-center gap-1.5">
+                  <div class="px-2 py-0.5 rounded-md bg-green-500/10 text-green-500 text-[8px] font-black uppercase tracking-tighter">OK</div>
+                  <Button v-if="tool.name === '.NET SDK' && runnerStore.customMsbuildPath" 
+                          variant="ghost" 
+                          size="icon" 
+                          class="h-6 w-6 rounded-md hover:bg-primary/10 text-primary/60 hover:text-primary transition-all"
+                          title="MSBuild Override Active"
+                          @click.stop="uiStore.isRunnerSettingsOpen = true">
+                    <Hammer class="size-3" />
+                  </Button>
+                </div>
+              </div>
+              
+              <!-- Setup MSBuild Hint if .NET missing -->
+              <div v-if="uiStore.envStatus.find(x => x.name === '.NET SDK' && !x.found)" 
+                   class="mt-2 p-2.5 rounded-xl bg-primary/5 border border-primary/10 flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <Hammer class="size-3.5 text-primary" />
+                  <div class="flex flex-col">
+                    <span class="text-[9px] font-black text-primary uppercase tracking-tight">MSBuild Setup</span>
+                    <span class="text-[8px] text-muted-foreground font-bold leading-tight">Use Visual Studio MSBuild if .NET CLI is missing</span>
+                  </div>
+                </div>
+                <Button variant="ghost" class="h-8 px-4 rounded-lg text-[9px] font-black uppercase tracking-widest border border-primary/20 hover:bg-primary/10 text-primary transition-all shadow-sm" @click="uiStore.isRunnerSettingsOpen = true">
+                  Setup
+                </Button>
               </div>
             </div>
 
@@ -163,6 +189,10 @@ function handleOAuthLogin() {
               <button @click="uiStore.isHotkeySettingsOpen = true" class="flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground w-full text-left transition-colors">
                 <Keyboard class="size-3.5" />
                 <span>Global Hotkeys</span>
+              </button>
+              <button @click="uiStore.isRunnerSettingsOpen = true" class="flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground w-full text-left transition-colors">
+                <Hammer class="size-3.5" />
+                <span>MSBuild Configuration</span>
               </button>
               <div class="h-px bg-border/50 my-1"></div>
               <button @click="() => uiStore.checkForUpdates(true)" class="flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-muted rounded-lg text-muted-foreground hover:text-foreground w-full text-left transition-colors">

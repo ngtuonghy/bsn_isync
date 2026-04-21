@@ -52,6 +52,7 @@ export const useUiStore = defineStore('ui', () => {
   const profileHashes = new Map<string, string>();
   const loadedIssueTypesProjectKey = ref<string | null>(null);
   const isNamingArgSnippetDialog = ref(false);
+  const isRunnerSettingsOpen = ref(false);
 
   const namingSqlSnippetTitle = computed(() => namingSqlSnippetMode.value === 'create' ? 'Create New SQL Script' : 'Rename SQL Script');
   const namingArgSnippetTitle = computed(() => namingArgSnippetMode.value === 'create' ? 'Create New Argument' : 'Rename Argument');
@@ -121,15 +122,22 @@ export const useUiStore = defineStore('ui', () => {
     }
   }
 
-  async function checkEnv() {
+  async function checkEnv(customMsbuildPath?: string) {
     try {
-      envStatus.value = await invoke<Array<{ name: string; found: boolean; version: string; downloadUrl: string }>>('check_environment');
+      envStatus.value = await invoke<Array<{ name: string; found: boolean; version: string; downloadUrl: string }>>('check_environment', {
+        customMsbuildPath: customMsbuildPath || null
+      });
       const missing = envStatus.value.filter(x => !x.found);
       if (missing.length > 0) {
-        toast.warning('Some required tools are missing', {
-          description: `Missing: ${missing.map(x => x.name).join(', ')}. Please install them to use all features.`,
-          duration: 10000,
-        });
+        // If .NET missing but MSBuild is configured, the backend will suppress the found:false if possible,
+        // but extra check here if we want to silence the toast.
+        const reallyMissing = missing.filter(m => m.name !== '.NET SDK' || !customMsbuildPath);
+        if (reallyMissing.length > 0) {
+          toast.warning('Some required tools are missing', {
+            description: `Missing: ${reallyMissing.map(x => x.name).join(', ')}. Please install them to use all features.`,
+            duration: 10000,
+          });
+        }
       }
     } catch (e) {
       console.error('Failed to check environment:', e);
@@ -191,6 +199,7 @@ export const useUiStore = defineStore('ui', () => {
     profileHashes,
     loadedIssueTypesProjectKey,
     isNamingArgSnippetDialog,
+    isRunnerSettingsOpen,
     namingSqlSnippetTitle,
     namingArgSnippetTitle,
     saveDeletedProfileIds,

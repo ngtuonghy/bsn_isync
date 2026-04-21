@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, Clock, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Code2, ListTree, Layers, FilePlus2, TerminalSquare, FileDown, Monitor, Target, Check, Settings2, Box } from "lucide-vue-next";
+import { FolderOpen, Maximize2, Lock, Plus, Pencil, Trash2, Hammer, Play, Square, RotateCcw, Beaker, Home, Search, RefreshCw, ExternalLink, X, ShieldAlert, Cloud, History, Code2, ListTree, Layers, FilePlus2, TerminalSquare, FileDown, Target, Check, Settings2, Box, Zap, ZapOff } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -59,7 +59,7 @@ onMounted(async () => {
 <template>
         <TabsContent value="runner" class="flex-1 min-h-0 m-0 border-0 p-0 outline-none">
           <section class="flex h-full gap-4 items-stretch overflow-hidden">
-            <div ref="mainScrollRef" class="w-[58%] min-h-0 flex flex-col gap-6 pt-2 pl-6 pr-4 pb-0 overflow-hidden">
+            <div ref="mainScrollRef" class="w-[58%] min-h-0 flex flex-col gap-6 pt-2 pl-6 pr-4 pb-6 overflow-hidden">
               <section class="rounded-3xl bg-card/98 flex-1 flex flex-col min-h-0 ring-1 ring-black/5 dark:ring-white/10 overflow-hidden shadow-sm transition-all duration-300">
                 <div class="px-4 py-3 border-b border-primary/5 flex items-center justify-between bg-muted/20">
                   <div class="flex items-center gap-3">
@@ -187,7 +187,7 @@ onMounted(async () => {
 
                         </div>
 
-                      <div class="flex-1 overflow-y-auto px-2 pt-2 pb-4 space-y-2 custom-scrollbar">
+                      <div class="flex-1 overflow-y-auto px-2 pt-2 pb-6 space-y-2 custom-scrollbar">
                         <button v-for="setup in runnerStore.scopedProfiles" :key="setup.id"
                                 :disabled="runnerStore.running"
                                 class="w-full flex text-left rounded-xl p-4 transition-all duration-300 group/item relative border items-center gap-4 overflow-hidden"
@@ -235,7 +235,7 @@ onMounted(async () => {
                     </div>
 
                     <!-- Right Column: Detail Form -->
-                    <div class="flex flex-col gap-4 border-l border-white/5 pl-4 overflow-y-auto custom-scrollbar">
+                    <div class="flex flex-col gap-4 border-l border-white/5 pl-4 overflow-y-auto pb-6 custom-scrollbar">
                       <div class="flex flex-col gap-2 pb-3 border-b border-primary/5">
                         <div class="flex items-center justify-between gap-2 shrink-0">
                           <span v-if="runnerStore.selectedProfile" class="text-[9px] font-bold text-muted-foreground opacity-30 font-mono tracking-tighter mt-0.5 ml-0.5">ID: {{ runnerStore.selectedProfile.id }}</span>
@@ -402,6 +402,16 @@ onMounted(async () => {
                                       <span>Build Targets</span>
                                     </Label>
                                     
+                                    <Button 
+                                      variant="ghost" 
+                                      size="icon" 
+                                      class="size-5 h-5 w-5 rounded-full hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all group/settings mr-1" 
+                                      title="Build Engine Settings (MSBuild)"
+                                      @click.stop="uiStore.isRunnerSettingsOpen = true"
+                                    >
+                                      <Hammer class="size-2.5 transition-transform duration-500 group-hover/settings:rotate-12" />
+                                    </Button>
+
                                     <Dialog>
                                       <DialogTrigger as-child>
                                         <Button variant="ghost" size="icon" class="size-5 h-5 w-5 rounded-full hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all group/settings" title="Configuration & SQL Setup">
@@ -489,9 +499,33 @@ onMounted(async () => {
                                       <RefreshCw class="size-2.5" />
                                     </Button>
                                   </div>
-                                  <span class="text-[9px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">
-                                    {{ runnerStore.selectedBuildProjects.size }} / {{ runnerStore.discoveredProjects.length }}
-                                  </span>
+                                  <div class="flex items-center gap-2">
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger as-child>
+                                          <Button 
+                                            variant="ghost" 
+                                            size="icon" 
+                                            class="size-6 h-6 w-6 transition-all rounded-lg border border-primary/5 active:scale-95"
+                                            :class="runnerStore.autoRebuild ? 'bg-primary/20 text-primary border-primary/20 shadow-sm shadow-primary/10' : 'bg-muted/30 text-muted-foreground/40'"
+                                            @click.stop="runnerStore.autoRebuild = !runnerStore.autoRebuild"
+                                          >
+                                            <component :is="runnerStore.autoRebuild ? Zap : ZapOff" class="size-3" />
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="top" :side-offset="8">
+                                          <div class="flex flex-col gap-0.5">
+                                            <span class="text-[10px] font-black uppercase tracking-wider">{{ runnerStore.autoRebuild ? 'Auto Rebuild Enabled' : 'Auto Rebuild Disabled' }}</span>
+                                            <span class="text-[8px] font-bold text-muted-foreground/60 uppercase tracking-widest">Build projects before Run/Test</span>
+                                          </div>
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+
+                                    <span class="text-[9px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">
+                                      {{ runnerStore.selectedBuildProjects.size }} / {{ runnerStore.discoveredProjects.length }}
+                                    </span>
+                                  </div>
                                 </div>
                                 
                                 <div class="space-y-1.5">
@@ -1018,7 +1052,7 @@ onMounted(async () => {
                  </div>
                </section>
              </div>
-            <div class="flex-1 h-full flex flex-col gap-4 min-w-0 pt-2 pr-6 pl-2 pb-0 overflow-hidden">
+            <div class="flex-1 h-full flex flex-col gap-4 min-w-0 pt-2 pr-6 pl-2 pb-6 overflow-hidden">
               <section class="rounded-3xl bg-card/25 flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl">
                 <!-- Header with Session Switcher -->
                 <div class="px-3 py-1 flex items-center justify-between gap-4 border-b bg-muted/50 shrink-0 w-full min-w-0">
@@ -1048,13 +1082,25 @@ onMounted(async () => {
                 <div class="flex-1 flex flex-row min-h-0 min-w-0 bg-card relative overflow-hidden">
                   <div class="flex-1 relative min-w-0 min-h-0">
                     <!-- Main Shell Viewport -->
-                    <div :class="terminalStore.termState.active === 'main' ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none z-0'" ref="mainTermRef" class="absolute inset-0 overflow-hidden terminal-custom-scroll"></div>
+                    <div :class="[
+                      terminalStore.termState.active === 'main' ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none z-0',
+                      'absolute inset-0 bg-white dark:bg-[#09090b] transition-all p-3'
+                    ]">
+                      <div ref="mainTermRef" class="w-full h-full overflow-hidden terminal-custom-scroll"></div>
+                    </div>
                     
                     <!-- Run Output Viewport -->
-                    <div v-for="tId in (terminalStore.termState.terminals || []).filter((t: any) => t !== 'main')" :key="tId" :class="terminalStore.termState.active === tId ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none z-0'" :id="'term-' + tId" class="absolute inset-0 overflow-hidden terminal-custom-scroll"></div>
+                    <div v-for="tId in (terminalStore.termState.terminals || []).filter((t: any) => t !== 'main')" 
+                         :key="tId" 
+                         :class="[
+                           terminalStore.termState.active === tId ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none z-0',
+                           'absolute inset-0 bg-white dark:bg-[#09090b] transition-all p-3'
+                         ]">
+                      <div :id="'term-' + tId" class="w-full h-full overflow-hidden terminal-custom-scroll"></div>
+                    </div>
                   </div>
                     <!-- Premium Vertical Execution Sidebar -->
-                  <div class="w-14 border-l bg-muted/40 flex flex-col shrink-0 overflow-y-auto scrollbar-none z-10 relative">
+                  <div class="w-14 border-l bg-muted/40 flex flex-col shrink-0 overflow-y-auto pb-6 scrollbar-none z-10 relative">
                     <TooltipProvider>
                       <div class="flex-1"></div>
 
@@ -1155,7 +1201,7 @@ onMounted(async () => {
                           </TooltipTrigger>
                           <TooltipContent side="left" :side-offset="12">
                             <div class="flex items-center gap-3">
-                              <span class="text-blue-400 font-semibold tracking-wide">Run Test (BAT)</span>
+                              <span class="text-blue-400 font-semibold tracking-wide">{{ runnerStore.isExeTestMode ? 'Run Test (EXE)' : 'Run Test (BAT)' }}</span>
                               <div class="h-4 w-px bg-white/10"></div>
                               <HotkeyLabel :shortcut="runnerStore.shortcuts.test" size="lg" variant="solid" />
                             </div>

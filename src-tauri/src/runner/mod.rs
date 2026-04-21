@@ -44,8 +44,8 @@ pub struct ProjectCandidate {
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct DotnetRequest {
-    pub project_root: String,
-    pub startup_project: String,
+    pub project_path: String,
+    pub custom_msbuild_path: Option<String>,
     pub urls: Option<String>,
     pub build_config: Option<String>,
     pub alias_exe_name: Option<String>,
@@ -66,19 +66,21 @@ pub struct DotnetRequest {
     pub pty_id: Option<String>,
     #[serde(rename = "isAppRunning")]
     pub is_app_running: Option<bool>,
+    pub extra_args: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DotnetOnceRequest {
     pub mode: String,
-    pub project_root: String,
-    pub startup_project: String,
+    pub project_path: String,
+    pub custom_msbuild_path: Option<String>,
     pub build_config: Option<String>,
     pub alias_exe_name: Option<String>,
     pub config_template: Option<String>,
     pub run_config_template: Option<String>,
     pub deploy_path: Option<String>,
+    pub extra_args: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -94,7 +96,7 @@ pub struct ToolCheck {
 #[serde(rename_all = "camelCase")]
 pub struct SyncAssetRequest {
     pub source: String,
-    pub project_root: String,
+    pub project_path: String,
     pub dest: String,
     pub include: Option<String>,
     pub exclude: Option<String>,
@@ -102,7 +104,6 @@ pub struct SyncAssetRequest {
 }
 
 pub fn copy_alias_exe_and_config(
-    root: &Path,
     startup_abs: &Path,
     config: &str,
     alias_exe_name: Option<&String>,
@@ -174,7 +175,6 @@ pub fn copy_alias_exe_and_config(
     let dst = dst_dir.join(&final_alias);
     let dest_parent = dst.parent().ok_or_else(|| "Invalid destination path".to_string())?;
     fs::create_dir_all(dest_parent).map_err(|e| format!("Could not create destination directory: {e}"))?;
-    let _root_canon = fs::canonicalize(root).map_err(|e| format!("Invalid project root: {e}"))?;
     let src_canon = fs::canonicalize(&src).map_err(|e| format!("EXE file not found after build: {e}"))?;
     
     let dst_canon_opt = fs::canonicalize(&dst).ok();
@@ -463,12 +463,23 @@ pub fn pick_project_folder(app: AppHandle) -> Result<Option<String>, String> {
 #[tauri::command]
 pub fn pick_file(app: AppHandle, default_path: Option<String>) -> Result<Option<String>, String> {
     let mut builder = app.dialog().file();
+    
+    // Default filter for MSBuild/EXE since that's the primary use case
+    builder = builder.add_filter("Executables", &["exe", "bat", "cmd"]);
+    builder = builder.add_filter("All Files", &["*"]);
+
     if let Some(p) = default_path {
         let pb = normalize_input_path(&p);
         if pb.exists() {
-            builder = builder.set_directory(pb);
+            if pb.is_dir() {
+                builder = builder.set_directory(pb);
+            } else if let Some(parent) = pb.parent() {
+                builder = builder.set_directory(parent);
+                builder = builder.set_file_name(pb.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+            }
         }
     }
+    
     let picked = builder.blocking_pick_file();
     let path = picked.and_then(|v| v.as_path().map(|p| p.to_path_buf()));
     Ok(path.map(|p| normalize_path(&p)))
@@ -575,45 +586,72 @@ pub fn discover_projects(root: String) -> Result<Vec<ProjectCandidate>, String> 
 
 #[tauri::command]
 pub fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> {
-    let root = normalize_input_path(&request.project_root);
-    let startup_abs = validate_startup_abs(&root, &request.startup_project)?;
-    let mut cmd = new_command("dotnet");
-    cmd.current_dir(&root);
+    let project_abs = normalize_input_path(&request.project_path);
+    if !project_abs.exists() {
+        return Err(format!("Project file not found: {}", request.project_path));
+    }
+    
     let mode = request.mode.to_ascii_lowercase();
     let config = get_build_config(request.build_config.as_ref());
+    let tool = get_build_tool(request.custom_msbuild_path.as_ref());
+    
+    let mut cmd = new_command(&tool.program);
+    for arg in &tool.args {
+        cmd.arg(arg);
+    }
+
     if mode == "restore" {
-        cmd.arg("restore").arg(&startup_abs);
+        if tool.program == "dotnet" {
+            cmd.arg("restore").arg(&project_abs);
+        } else {
+            cmd.arg("/t:restore").arg(&project_abs);
+        }
     } else if mode == "build" {
-        cmd.arg("build").arg(&startup_abs).arg("-c").arg(&config);
+        if tool.program == "dotnet" {
+            cmd.arg("build").arg(&project_abs).arg("-c").arg(&config);
+        } else {
+            cmd.arg(&project_abs).arg(format!("/p:Configuration={}", config));
+        }
     } else {
         return Err("Invalid mode, only restore/build supported".to_string());
     }
+    
+    // Append extra arguments if provided
+    if let Some(ea) = request.extra_args.as_ref().filter(|s| !s.trim().is_empty()) {
+        for arg in ea.split_whitespace() {
+            cmd.arg(arg);
+        }
+    }
+
     let mut output = run_capture(cmd)?;
     if mode == "build" && output.code == 0 {
-        let mut target_abs = startup_abs.clone();
-        // Only build RBA if startup project is not already the RBA itself
-        let is_startup_rba = startup_abs.to_string_lossy().to_ascii_lowercase().contains("receivebatchaction");
-        if !is_startup_rba {
-            if let Some(rba) = get_receive_batch_action(&startup_abs) {
-                let mut rba_build = new_command("dotnet");
-                rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
-                let rba_out = run_capture(rba_build)?;
-                output.stdout = format!("{}\n[ReceiveBatchAction]\n{}", output.stdout, rba_out.stdout);
-                if !rba_out.stderr.trim().is_empty() {
-                    output.stderr = format!("{}\n{}", output.stderr, rba_out.stderr);
-                }
-                if rba_out.code != 0 {
-                    output.code = rba_out.code;
-                } else {
-                    target_abs = rba;
+        if let Some(rba) = get_receive_batch_action(&project_abs) {
+            let rba_tool = get_build_tool(request.custom_msbuild_path.as_ref());
+            let mut rba_build = new_command(&rba_tool.program);
+            for arg in &rba_tool.args {
+                rba_build.arg(arg);
+            }
+            if rba_tool.program == "dotnet" {
+                rba_build.arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
+            } else {
+                rba_build.arg(normalize_path(&rba)).arg(format!("/p:Configuration={}", config));
+            }
+            // Append extra arguments
+            if let Some(ea) = request.extra_args.as_ref().filter(|s| !s.trim().is_empty()) {
+                for arg in ea.split_whitespace() {
+                    rba_build.arg(arg);
                 }
             }
+            let rba_out = run_capture(rba_build)?;
+            output.stdout.push_str("\n[RBA Build]\n");
+            output.stdout.push_str(&rba_out.stdout);
+            output.stderr.push_str(&rba_out.stderr);
         }
+
         if output.code == 0 {
             // For dotnet_once build (not exe target), use template as base
             if let Some(copy_msg) = copy_alias_exe_and_config(
-                &root,
-                &target_abs,
+                &project_abs,
                 &config,
                 request.alias_exe_name.as_ref(),
                 request.config_template.as_ref(),
@@ -635,22 +673,25 @@ pub fn dotnet_once(request: DotnetOnceRequest) -> Result<CommandResult, String> 
 
 #[tauri::command]
 pub fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
-    let root = normalize_input_path(&request.project_root);
-    let startup_abs = validate_startup_abs(&root, &request.startup_project)?;
-    let project_dir = match startup_abs.parent() {
-        Some(p) => p,
-        None => return Err("Invalid project directory".to_string()),
-    };
-    let startup_file = match startup_abs.file_name() {
-        Some(f) => f,
-        None => return Err("Invalid project filename".to_string()),
-    };
+    let project_abs = normalize_input_path(&request.project_path);
+    if !project_abs.exists() {
+        return Err(format!("Project file not found: {}", request.project_path));
+    }
+    
+    let config = get_build_config(request.build_config.as_ref());
+    let tool = get_build_tool(request.custom_msbuild_path.as_ref());
 
-    let mut restore = new_command("dotnet");
-    restore
-        .current_dir(project_dir)
-        .arg("restore")
-        .arg(startup_file);
+    let mut restore = new_command(&tool.program);
+    for arg in &tool.args {
+        restore.arg(arg);
+    }
+
+    if tool.program == "dotnet" {
+        restore.arg("restore").arg(&project_abs);
+    } else {
+        restore.arg("/t:restore").arg(&project_abs);
+    }
+
     let restore_out = run_capture(restore)?;
     if restore_out.code != 0 {
         return Ok(CommandResult {
@@ -659,73 +700,71 @@ pub fn dotnet_rebuild(request: DotnetRequest) -> Result<CommandResult, String> {
             stderr: format!("[restore]\n{}", restore_out.stderr),
         });
     }
-    let config = get_build_config(request.build_config.as_ref());
-    let mut build = new_command("dotnet");
-    build
-        .current_dir(project_dir)
-        .arg("build")
-        .arg(startup_file)
-        .arg("-c")
-        .arg(&config);
-    let mut build_out = run_capture(build)?;
-    let mut target_abs = startup_abs.clone();
 
-    if build_out.code == 0 {
-        if let Some(rba) = get_receive_batch_action(&startup_abs) {
-            let mut rba_build = new_command("dotnet");
-            rba_build.current_dir(&root).arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
+    let mut build = new_command(&tool.program);
+    for arg in &tool.args {
+        build.arg(arg);
+    }
+    
+    if tool.program == "dotnet" {
+        build.arg("build").arg(&project_abs).arg("-c").arg(&config);
+    } else {
+        build.arg(&project_abs).arg(format!("/p:Configuration={}", config));
+    }
+    
+    // Append extra arguments
+    if let Some(ea) = request.extra_args.as_ref().filter(|s| !s.trim().is_empty()) {
+        for arg in ea.split_whitespace() {
+            build.arg(arg);
+        }
+    }
+
+    let mut output = run_capture(build)?;
+    if output.code == 0 {
+        if let Some(rba) = get_receive_batch_action(&project_abs) {
+            let rba_tool = get_build_tool(request.custom_msbuild_path.as_ref());
+            let mut rba_build = new_command(&rba_tool.program);
+            for arg in &rba_tool.args {
+                rba_build.arg(arg);
+            }
+            if rba_tool.program == "dotnet" {
+                rba_build.arg("build").arg(normalize_path(&rba)).arg("-c").arg(&config);
+            } else {
+                rba_build.arg(normalize_path(&rba)).arg(format!("/p:Configuration={}", config));
+            }
+            // Append extra arguments
+            if let Some(ea) = request.extra_args.as_ref().filter(|s| !s.trim().is_empty()) {
+                for arg in ea.split_whitespace() {
+                    rba_build.arg(arg);
+                }
+            }
             let rba_out = run_capture(rba_build)?;
-            build_out.stdout = format!("{}\n[ReceiveBatchAction]\n{}", build_out.stdout, rba_out.stdout);
-            if !rba_out.stderr.trim().is_empty() {
-                build_out.stderr = format!("{}\n{}", build_out.stderr, rba_out.stderr);
-            }
-            if rba_out.code != 0 {
-                build_out.code = rba_out.code;
-            } else {
-                target_abs = rba;
-            }
+            output.stdout.push_str("\n[RBA Build]\n");
+            output.stdout.push_str(&rba_out.stdout);
+            output.stderr.push_str(&rba_out.stderr);
         }
-    }
 
-    if build_out.code == 0 {
-        // For dotnet_rebuild, use template as base (like bat)
-        if let Some(copy_msg) = copy_alias_exe_and_config(
-            &root,
-            &target_abs,
-            &config,
-            request.alias_exe_name.as_ref(),
-            request.config_template.as_ref(),
-            request.run_config_template.as_ref(),
-            request.deploy_path.as_ref(),
-            None,
-            false, // use_app_config = false
-        )? {
-            build_out.stdout = if build_out.stdout.is_empty() {
-                copy_msg
-            } else {
-                format!("{}\n{}", build_out.stdout, copy_msg)
-            };
+        if output.code == 0 {
+            if let Some(copy_msg) = copy_alias_exe_and_config(
+                &project_abs,
+                &config,
+                request.alias_exe_name.as_ref(),
+                request.config_template.as_ref(),
+                request.run_config_template.as_ref(),
+                request.deploy_path.as_ref(),
+                None,
+                false,
+            )? {
+                output.stdout = if output.stdout.trim().is_empty() {
+                    copy_msg
+                } else {
+                    format!("{}\n{}", output.stdout, copy_msg)
+                };
+            }
         }
     }
-    Ok(CommandResult {
-        code: build_out.code,
-        stdout: format!(
-            "[restore]\n{}\n\n[build]\n{}",
-            restore_out.stdout, build_out.stdout
-        ),
-        stderr: {
-            let mut err = String::new();
-            if !restore_out.stderr.trim().is_empty() {
-                err.push_str(&format!("[restore]\n{}\n\n", restore_out.stderr));
-            }
-            if !build_out.stderr.trim().is_empty() {
-                err.push_str(&format!("[build]\n{}", build_out.stderr));
-            }
-            err
-        },
-    })
+    Ok(output)
 }
-
 #[tauri::command]
 pub fn dotnet_run_start(
     app: AppHandle,
@@ -733,20 +772,21 @@ pub fn dotnet_run_start(
     pty_state: State<MultiPtyState>,
     request: DotnetRequest,
 ) -> Result<u32, String> {
-    let root = normalize_input_path(&request.project_root);
-    let startup_abs = validate_startup_abs(&root, &request.startup_project)?;
+    let project_abs = normalize_input_path(&request.project_path);
+    if !project_abs.exists() {
+        return Err(format!("Project file not found: {}", request.project_path));
+    }
     let config = get_build_config(request.build_config.as_ref());
 
-    
     let target = request.target.as_deref().unwrap_or("exe");
     let is_bat = target == "bat";
     let is_exe = target == "exe" || target == "test_exe";
     
-    // Declare these variables early so they're available after the build block
-    let mut target_abs = startup_abs.clone();
+    // Declare these variables early
+    let mut target_abs = project_abs.clone();
     // Only set target_abs to RBA for exe targets (not for bat)
     if is_exe && request.target.as_deref() != Some("test_exe") {
-        if let Some(rba) = get_receive_batch_action(&startup_abs) {
+        if let Some(rba) = get_receive_batch_action(&project_abs) {
             target_abs = rba;
         }
     }
@@ -771,28 +811,23 @@ pub fn dotnet_run_start(
             }
         });
 
-
         if is_bat {
-            // Write configTemplate (TARGET CONFIG) to target project's OutputPath
             if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
-                match write_config_for_project(&startup_abs, &config, ct) {
+                match write_config_for_project(&project_abs, &config, ct) {
                     Ok(msg) => { let _ = app.emit("runner-log", msg); },
                     Err(e) => { let _ = app.emit("runner-log", format!("[WARN] Config write failed: {}", e)); },
                 }
             }
             let _ = app.emit("build-status", "done");
         } else if is_exe {
-            // Write configTemplate (TARGET CONFIG) to startup project's OutputPath
             if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
-                match write_config_for_project(&startup_abs, &config, ct) {
+                match write_config_for_project(&project_abs, &config, ct) {
                     Ok(msg) => { let _ = app.emit("runner-log", msg); },
                     Err(e) => { let _ = app.emit("runner-log", format!("[WARN] Config write failed: {}", e)); },
                 }
             }
             
-            // Handle RBA if present
-            if let Some(rba) = get_receive_batch_action(&startup_abs) {
-                // Copy RBA exe with bat name alias and write runConfigTemplate (RUN CONFIG EXE)
+            if let Some(rba) = get_receive_batch_action(&project_abs) {
                 let rba_alias = request.alias_exe_name.as_ref()
                     .map(|x| x.trim().to_string())
                     .filter(|x| !x.is_empty())
@@ -804,11 +839,10 @@ pub fn dotnet_run_start(
                     }
                 }
             }
-            
             let _ = app.emit("build-status", "done");
         }
-        // test_exe: no config copy needed
-    } // end of outer block
+    }
+    // test_exe: no config copy needed
 
     // force_unicode processing for both bat and exe targets
     if request.force_unicode.unwrap_or(false) {
@@ -821,7 +855,6 @@ pub fn dotnet_run_start(
                     
                     let search_bytes = b"SQLCMD";
 
-                    
                     for byte in content_bytes.iter() {
                         new_content.push(*byte);
                     }
@@ -866,7 +899,7 @@ pub fn dotnet_run_start(
                             
                             // For exe target: re-write the RBA config with updated _isync bat path
                             if target == "exe" {
-                                if let Some(rba) = get_receive_batch_action(&startup_abs) {
+                                if let Some(rba) = get_receive_batch_action(&project_abs) {
                                     let rba_alias = request.alias_exe_name.as_ref()
                                         .map(|x| x.trim().to_string())
                                         .filter(|x| !x.is_empty())
@@ -906,7 +939,7 @@ pub fn dotnet_run_start(
     };
     
     let run_project_abs = if request.target.as_deref() == Some("test_exe") {
-        &startup_abs
+        &project_abs
     } else {
         &target_abs
     };
@@ -940,7 +973,7 @@ pub fn dotnet_run_start(
         if dp_path.is_absolute() {
             dp_path
         } else {
-            root.join(dp_path)
+            project_abs.parent().unwrap_or(Path::new(".")).join(dp_path)
         }
     } else if let Some(ref p) = custom_out {
         project_dir.join(p.replace('\\', "/"))
@@ -1100,20 +1133,18 @@ pub fn dotnet_run_is_running(state: State<RunnerState>) -> Result<bool, String> 
 }
 
 #[tauri::command]
-pub fn deploy_project_config(project_root: String, startup_project: String, config_template: String) -> Result<String, String> {
-    let root = normalize_input_path(&project_root);
-    let startup_abs = validate_startup_abs(&root, &startup_project)?;
-    let project_dir = startup_abs.parent().ok_or_else(|| "Could not determine project directory".to_string())?;
+pub fn deploy_project_config(project_path: String, config_template: String) -> Result<String, String> {
+    let project_abs = normalize_input_path(&project_path);
+    let project_dir = project_abs.parent().ok_or_else(|| "Could not determine project directory".to_string())?;
     let config_path = project_dir.join("App.config");
     fs::write(&config_path, config_template).map_err(|e| format!("Failed to write App.config: {e}"))?;
     Ok(normalize_path(&config_path))
 }
 
 #[tauri::command]
-pub fn fetch_project_config(project_root: String, startup_project: String) -> Result<String, String> {
-    let root = normalize_input_path(&project_root);
-    let startup_abs = validate_startup_abs(&root, &startup_project)?;
-    let project_dir = startup_abs.parent().ok_or_else(|| "Could not determine project directory".to_string())?;
+pub fn fetch_project_config(project_path: String) -> Result<String, String> {
+    let project_abs = normalize_input_path(&project_path);
+    let project_dir = project_abs.parent().ok_or_else(|| "Could not determine project directory".to_string())?;
     let config_path = project_dir.join("App.config");
     if !config_path.exists() {
         return Err("App.config does not exist in the target project folder".to_string());
@@ -1123,15 +1154,17 @@ pub fn fetch_project_config(project_root: String, startup_project: String) -> Re
 
 #[tauri::command]
 pub fn sync_asset(request: SyncAssetRequest) -> Result<CommandResult, String> {
-    let root = normalize_input_path(&request.project_root);
+    let project_abs = normalize_input_path(&request.project_path);
+    let root = if project_abs.is_file() {
+        project_abs.parent().unwrap_or(&project_abs).to_path_buf()
+    } else {
+        project_abs.clone()
+    };
+    
     let source = normalize_input_path(&request.source);
-    let root_canon = fs::canonicalize(&root).map_err(|e| format!("Project root không hợp lệ: {e}"))?;
     let dest_abs = root.join(request.dest.replace('/', "\\"));
     fs::create_dir_all(&dest_abs).map_err(|e| format!("Không tạo được thư mục đích: {e}"))?;
     let dest_canon = fs::canonicalize(&dest_abs).map_err(|e| format!("Dest không hợp lệ: {e}"))?;
-    if !dest_canon.starts_with(&root_canon) {
-        return Err("Dest nằm ngoài project root".to_string());
-    }
     let mut cmd = new_command("robocopy");
     cmd.arg(source).arg(dest_canon);
     if let Some(include) = request.include {
@@ -1292,7 +1325,7 @@ pub fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn check_environment() -> Vec<ToolCheck> {
+pub fn check_environment(custom_msbuild_path: Option<String>) -> Vec<ToolCheck> {
     let mut results = Vec::new();
 
     let mut dotnet = ToolCheck {
@@ -1301,6 +1334,14 @@ pub fn check_environment() -> Vec<ToolCheck> {
         version: "".to_string(),
         download_url: "https://dotnet.microsoft.com/en-us/download/dotnet/6.0".to_string(),
     };
+
+    // If custom MSBuild is configured and exists, we skip/ignore dotnet check errors
+    let msbuild_configured = if let Some(ref path) = custom_msbuild_path {
+        !path.trim().is_empty() && std::path::Path::new(path).exists()
+    } else {
+        false
+    };
+
     let mut cmd_dotnet = new_command("dotnet");
     cmd_dotnet.arg("--version");
     #[cfg(windows)]
@@ -1310,6 +1351,11 @@ pub fn check_environment() -> Vec<ToolCheck> {
             dotnet.found = true;
             dotnet.version = String::from_utf8_lossy(&out.stdout).trim().to_string();
         }
+    }
+
+    if !dotnet.found && msbuild_configured {
+        dotnet.found = true;
+        dotnet.version = "Using Custom MSBuild".to_string();
     }
     results.push(dotnet);
 
@@ -1350,23 +1396,22 @@ pub fn write_project_config_output(project_path: String, build_config: String, c
 }
 
 #[tauri::command]
-pub fn verify_debug_output_sync(project_root: String, startup_project: String, expected_cs: String) -> Result<String, String> {
-    let root = normalize_input_path(&project_root);
-    let mut startup_abs = validate_startup_abs(&root, &startup_project)?;
+pub fn verify_debug_output_sync(project_path: String, expected_cs: String) -> Result<String, String> {
+    let mut project_abs = normalize_input_path(&project_path);
     
-    // RESOLVE .csproj if startup_abs is a directory
-    if startup_abs.is_dir() {
-        let dir_name = startup_abs.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let named_csproj = startup_abs.join(format!("{}.csproj", dir_name));
+    // RESOLVE .csproj if project_abs is a directory
+    if project_abs.is_dir() {
+        let dir_name = project_abs.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let named_csproj = project_abs.join(format!("{}.csproj", dir_name));
         if named_csproj.exists() {
-            startup_abs = named_csproj;
+            project_abs = named_csproj;
         } else {
             // Fallback: search for ANY .csproj in the folder
-            if let Ok(entries) = fs::read_dir(&startup_abs) {
+            if let Ok(entries) = fs::read_dir(&project_abs) {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if p.extension().map(|ex| ex == "csproj").unwrap_or(false) {
-                        startup_abs = p;
+                        project_abs = p;
                         break;
                     }
                 }
@@ -1374,16 +1419,16 @@ pub fn verify_debug_output_sync(project_root: String, startup_project: String, e
         }
     }
 
-    if !startup_abs.is_file() {
+    if !project_abs.is_file() {
         return Ok("missing".to_string());
     }
 
-    let project_dir = startup_abs.parent().ok_or("Invalid project path")?;
+    let project_dir = project_abs.parent().ok_or("Invalid project path")?;
     let config = "Debug";
     let mut output_path = String::new();
     let mut assembly_name = String::new();
 
-    if let Ok(content) = fs::read_to_string(&startup_abs) {
+    if let Ok(content) = fs::read_to_string(&project_abs) {
         let mut in_debug_group = false;
         for line in content.lines() {
             let l = line.trim();
@@ -1422,8 +1467,8 @@ pub fn verify_debug_output_sync(project_root: String, startup_project: String, e
         output_path = format!("bin/{}", config);
     }
     if assembly_name.is_empty() {
-        assembly_name = startup_abs.file_stem()
-            .map(|s| s.to_string_lossy().to_string())
+        assembly_name = project_abs.file_stem()
+            .map(|s: &std::ffi::OsStr| s.to_string_lossy().to_string())
             .unwrap_or_default();
     }
 
@@ -1442,14 +1487,7 @@ pub fn verify_debug_output_sync(project_root: String, startup_project: String, e
     let actual_path = if config_path.exists() {
         Some(config_path)
     } else {
-        // FALLBACK: Check workspace batch/EXE
-        let workspace_exe_config = root.join("batch").join("EXE").join(&config_fn);
-        println!("[SyncCheck] Not found locally. Checking fallback: {}", workspace_exe_config.display());
-        if workspace_exe_config.exists() {
-            Some(workspace_exe_config)
-        } else {
-            None
-        }
+        None
     };
 
     if let Some(path) = actual_path {
@@ -1504,30 +1542,55 @@ pub fn verify_debug_output_sync(project_root: String, startup_project: String, e
 }
 
 #[tauri::command]
-pub fn dotnet_plain_command(mode: String, project_root: String, startup_project: String, build_config: Option<String>) -> Result<CommandResult, String> {
-    let root = normalize_input_path(&project_root);
-    let startup_abs = validate_startup_abs(&root, &startup_project)?;
-    let project_dir = match startup_abs.parent() {
-        Some(p) => p,
-        None => return Err("Invalid project directory".to_string()),
-    };
-    let startup_file = match startup_abs.file_name() {
-        Some(f) => f,
-        None => return Err("Invalid project filename".to_string()),
-    };
-
-    let mut cmd = new_command("dotnet");
-    cmd.current_dir(project_dir);
-    let md = mode.to_ascii_lowercase();
+pub fn dotnet_plain_command(
+    mode: String,
+    project_path: String,
+    custom_msbuild_path: Option<String>,
+    build_config: Option<String>,
+    extra_args: Option<String>,
+) -> Result<CommandResult, String> {
+    let project_abs = normalize_input_path(&project_path);
+    if !project_abs.exists() {
+        return Err(format!("Project file not found: {}", project_path));
+    }
     
+    let config = get_build_config(build_config.as_ref());
+    println!("[BSN_ISYNC] Incoming custom_msbuild_path: {:?}", custom_msbuild_path);
+    let tool = get_build_tool(custom_msbuild_path.as_ref());
+    
+    let mut cmd = new_command(&tool.program);
+    for arg in &tool.args {
+        cmd.arg(arg);
+    }
+
+    let md = mode.to_ascii_lowercase();
     if md == "restore" {
-        cmd.arg("restore").arg(startup_file);
+        if tool.program == "dotnet" {
+            cmd.arg("restore").arg(&project_abs);
+        } else {
+            cmd.arg("/t:restore").arg(&project_abs);
+        }
     } else if md == "build" {
-        let config = get_build_config(build_config.as_ref());
-        cmd.arg("build").arg(startup_file).arg("-c").arg(&config);
+        if tool.program == "dotnet" {
+            cmd.arg("build").arg(&project_abs).arg("-c").arg(&config);
+        } else {
+            cmd.arg("-restore")
+               .arg(&project_abs)
+               .arg(format!("/p:Configuration={}", config))
+               .arg("/p:DisableOutOfProcTaskHost=true");
+        }
     } else {
         return Err("Invalid mode".to_string());
     }
+    
+    // Append extra arguments if provided
+    if let Some(ea) = extra_args.as_ref().filter(|s| !s.trim().is_empty()) {
+        for arg in ea.split_whitespace() {
+            cmd.arg(arg);
+        }
+    }
+    
+    println!("[BSN_ISYNC] Executing build command: {:?}", cmd);
     
     run_capture(cmd)
 }

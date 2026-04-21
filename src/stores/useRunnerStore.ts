@@ -54,6 +54,9 @@ export type ProjectProfile = {
   targetConfigs?: Record<string, string>;
   deployPath?: string;
   selectedBuildProjects?: string[];
+  customMsbuildPath?: string;
+  extraBuildArgs?: string;
+  autoRebuild?: boolean;
   updatedAt: number;
   lastSyncedHash?: string;
   isLocalEdited?: boolean;
@@ -171,6 +174,9 @@ export const useRunnerStore = defineStore('runner', () => {
   });
   const autoDeployConfig = ref(false);
   const deployPath = ref('');
+  const customMsbuildPath = ref('');
+  const extraBuildArgs = ref('/p:Configuration=Debug');
+  const autoRebuild = ref(true);
 
   const discoveredProjects = ref<Array<{
     name: string;
@@ -241,9 +247,9 @@ export const useRunnerStore = defineStore('runner', () => {
 
   const currentUser = computed(() => backlogStore.backlog.profile?.name || backlogStore.backlog.profile?.userId || '');
 
-  const canBuild = computed(() => !running.value && projectRoot.value && startupProject.value);
-  const canTest = computed(() => running.value || (projectRoot.value && startupProject.value && batFilePath.value));
-  const canRun = computed(() => !running.value && projectRoot.value && startupProject.value && aliasExeName.value && batFilePath.value);
+  const canBuild = computed(() => !running.value && selectedBuildProjects.value.size > 0);
+  const canTest = computed(() => !running.value && (isExeTestMode.value || !!batFilePath.value));
+  const canRun = computed(() => !running.value && !!aliasExeName.value);
   
 const getTargetProjectName = (targetProjectPath: string) => {
     if (!targetProjectPath) return '';
@@ -460,6 +466,8 @@ const getTargetProjectName = (targetProjectPath: string) => {
       backlogIssueSummary: backlogIssueSummary.value,
       deployPath: toRel(deployPath.value),
       selectedBuildProjects: [...selectedBuildProjects.value],
+      customMsbuildPath: customMsbuildPath.value,
+      extraBuildArgs: extraBuildArgs.value,
       sync: (() => {
         const { logs, ...syncData } = sync;
         return JSON.parse(JSON.stringify(syncData));
@@ -493,10 +501,13 @@ const getTargetProjectName = (targetProjectPath: string) => {
     isExeTestMode.value = setup.isExeTestMode || false;
     deployPath.value = toAbs(setup.deployPath || '');
     sqlSetupPath.value = setup.sqlSetupPath || '';
+    console.log('[RunnerStore] applySetupToRunner: Setting customMsbuildPath to:', setup.customMsbuildPath || 'EMPTY');
+    customMsbuildPath.value = setup.customMsbuildPath || '';
+    extraBuildArgs.value = setup.extraBuildArgs || '';
+    autoRebuild.value = setup.autoRebuild ?? true;
     
     // Restore side effects of project selection
     if (projectRoot.value) {
-      invoke('pty_write', { id: 'main', data: `cd '${projectRoot.value}'\r` }).catch(() => {});
       loadConfigsForCurrentProject();
     }
 
@@ -697,6 +708,9 @@ const getTargetProjectName = (targetProjectPath: string) => {
     setup.deployPath = toRel(deployPath.value);
     setup.targetConfigs = JSON.parse(JSON.stringify(targetConfigs.value || {}));
     setup.selectedBuildProjects = [...selectedBuildProjects.value];
+    setup.customMsbuildPath = customMsbuildPath.value;
+    setup.extraBuildArgs = extraBuildArgs.value;
+    setup.autoRebuild = autoRebuild.value;
     
     const setupForCompare = { ...setup, updatedAt: setupProfiles.value[idx].updatedAt };
     const newSetupStr = JSON.stringify(cleanObj(setupForCompare), Object.keys(cleanObj(setupForCompare)).sort());
@@ -846,7 +860,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
   }
 
   function validatePaths() {
-    return projectRoot.value.trim().length > 0 && startupProject.value.trim().length > 0;
+    return true; // We no longer validate global projectRoot or startupProject since targets are handled directly.
   }
 
   function resolveArgs(args: string) {
@@ -906,8 +920,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
     
     try {
       const targetContent = await invoke('fetch_project_config', {
-        projectRoot: projectRoot.value,
-        startupProject: startupProject.value,
+        projectPath: projectRoot.value + '\\' + startupProject.value,
       }).catch(e => { console.warn('Failed to fetch target config', e); return null; });
       
       if (targetContent) {
@@ -915,8 +928,7 @@ const getTargetProjectName = (targetProjectPath: string) => {
       }
       
       const runContent = await invoke('fetch_project_config', {
-        projectRoot: 'D:\\workspace\\invoice\\Arkbell.Console\\Arkbell.Console.ReceiveBatchAction',
-        startupProject: 'Arkbell.Console.ReceiveBatchAction.csproj',
+        projectPath: 'D:\\workspace\\invoice\\Arkbell.Console\\Arkbell.Console.ReceiveBatchAction\\Arkbell.Console.ReceiveBatchAction.csproj',
       }).catch(e => { console.warn('Failed to fetch run config', e); return null; });
 
       if (runContent) {
@@ -1033,105 +1045,72 @@ const getTargetProjectName = (targetProjectPath: string) => {
   }
 
   async function runDotnetAndCollect(mode: 'restore' | 'build') {
-    const allProjects: { project: string; root: string; startup: string; config: string }[] = [];
+    const allProjects: { projectPath: string; config: string }[] = [];
     
     // Build only selected projects in checkbox
     for (const discovered of discoveredProjects.value) {
       if (discovered.startupProject && selectedBuildProjects.value.has(discovered.root)) {
+        const fullPath = discovered.root + '\\' + discovered.startupProject;
         allProjects.push({
-          project: discovered.startupProject,
-          root: discovered.root,
-          startup: discovered.startupProject,
+          projectPath: fullPath,
           config: targetConfigs.value?.[discovered.startupProject] || config.value
         });
       }
     }
     
-    // If nothing selected, don't build anything
     if (allProjects.length === 0) {
       console.log('[build] No targets selected, skipping build');
       return;
     }
     
-    for (let i = 0; i < allProjects.length; i++) {
-      const proj = allProjects[i];
-      
-      const isAbsolute = /^[a-zA-Z]:\\/.test(proj.project) || proj.project.startsWith('/');
-      
-      let projectPath: string;
-      let targetProjectRoot = proj.root;
-      let targetStartupProject = proj.startup;
-      let buildConfig: string = proj.config;
-      
-      if (isAbsolute) {
-        projectPath = proj.project;
-        targetProjectRoot = projectPath.substring(0, projectPath.lastIndexOf('\\'));
-        targetStartupProject = projectPath.split('\\').pop() || '';
-      } else if (proj.project.includes('\\') || proj.project.includes('/')) {
-        const projectFileName = proj.project.split('\\').pop()?.split('/').pop();
-        const discovered = discoveredProjects.value.find(d => 
-          d.startupProject === projectFileName ||
-          proj.project.endsWith('\\' + d.startupProject) ||
-          proj.project.endsWith('/' + d.startupProject)
-        );
-        
-        if (discovered && discovered.root) {
-          projectPath = discovered.root + '\\' + projectFileName;
-          targetProjectRoot = discovered.root;
-          targetStartupProject = projectFileName || '';
-          if (projectFileName && targetConfigs.value && targetConfigs.value[projectFileName]) {
-            buildConfig = targetConfigs.value[projectFileName];
-          }
-        } else {
-          projectPath = projectRoot.value + '\\' + proj.project;
-          targetStartupProject = proj.project;
-        }
-      } else {
-        projectPath = proj.root + '\\' + proj.project;
-        if (targetConfigs.value && targetConfigs.value[proj.project]) {
-          buildConfig = targetConfigs.value[proj.project];
-        }
-      }
-
-      console.log(`[${mode}] Building ${targetStartupProject} (${buildConfig}) in ${targetProjectRoot}...`);
+    for (const proj of allProjects) {
+      console.log(`[${mode}] Processing ${proj.projectPath} (${proj.config})...`);
       
       try {
+        console.log(`[build] Invoking dotnet_plain_command with:`, {
+           mode: mode,
+           projectPath: proj.projectPath,
+           custom_msbuild_path: customMsbuildPath.value || null,
+           buildConfig: proj.config,
+           extraArgs: extraBuildArgs.value || null,
+        });
+
         const result = await invoke<{ code: number, stdout: string, stderr: string }>('dotnet_plain_command', {
           mode: mode,
-          projectRoot: targetProjectRoot,
-          startupProject: targetStartupProject,
-          buildConfig: buildConfig,
+          projectPath: proj.projectPath,
+          customMsbuildPath: customMsbuildPath.value || null,
+          custom_msbuild_path: customMsbuildPath.value || null,
+          buildConfig: proj.config,
+          extraArgs: extraBuildArgs.value || null,
+          extra_args: extraBuildArgs.value || null,
         });
 
         if (result.code !== 0) {
-           toast.error(`Build failed for ${targetStartupProject}`, { description: result.stderr || result.stdout });
+           toast.error(`Build failed for ${proj.projectPath}`, { description: result.stderr || result.stdout });
            if (mode === 'build') continue;
-        } else {
-          console.log(`[${mode}] ${targetStartupProject} built successfully`);
         }
 
         if (mode === 'build') {
           try {
             const targetContent = await invoke<string>('fetch_project_config', {
-              projectRoot: targetProjectRoot,
-              startupProject: targetStartupProject,
+              projectPath: proj.projectPath,
             });
             
             if (targetContent) {
               const synced = getSyncedTpl(targetContent);
               await invoke('write_project_config_output', {
-                projectPath: projectPath,
-                buildConfig: buildConfig,
+                projectPath: proj.projectPath,
+                buildConfig: proj.config,
                 content: synced,
               });
-              console.log(`[build] Overwrote synced config for ${targetStartupProject}`);
+              console.log(`[build] Overwrote synced config for ${proj.projectPath}`);
             }
           } catch (configErr) {
-            console.warn(`[build] Failed to fetch/write config for ${targetStartupProject}`, configErr);
+            console.warn(`[build] Failed to fetch/write config for ${proj.projectPath}`, configErr);
           }
         }
       } catch (err: any) {
-        console.error(`[${mode}] Failed for ${targetStartupProject}:`, err);
+        console.error(`[${mode}] Failed for ${proj.projectPath}:`, err);
       }
       
       if (mode === 'build') {
@@ -1172,6 +1151,32 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
   }
 
+  async function checkProjectSyncs() {
+    if (selectedBuildProjects.value.size === 0) return;
+
+    const expectedCs = `Data Source=${sqlServer.value};Initial Catalog=${sqlDatabase.value}`;
+
+    for (const rootPath of selectedBuildProjects.value) {
+      const proj = discoveredProjects.value.find(p => p.root === rootPath);
+      if (!proj) continue;
+
+      try {
+        const fullPath = proj.root + '\\' + proj.startupProject;
+        const state = await invoke<string>('verify_debug_output_sync', {
+          projectPath: fullPath,
+          expectedCs: expectedCs
+        }).catch(err => {
+           console.error(`[SyncCheck] RPC Error for ${proj.name}:`, err);
+           return 'missing';
+        });
+        
+        projectSyncStates.value[proj.root] = state as any;
+      } catch (e) {
+        console.error('[SyncCheck] Outer catch failed for', proj.name, e);
+      }
+    }
+  }
+
   // Automatic verification on selection change or SQL change
   watch(
     [() => Array.from(selectedBuildProjects.value), () => sqlServer.value, () => sqlDatabase.value],
@@ -1188,11 +1193,6 @@ const getTargetProjectName = (targetProjectPath: string) => {
     loadingTarget.value = loadingKey;
     
     saveCurrentToSelectedSetupProfile();
-    if (!validatePaths()) {
-      toast.error('Please enter projectRoot and startupProject');
-      loadingTarget.value = null;
-      return;
-    }
     if (aliasExeName.value && !aliasExeName.value.toLowerCase().endsWith('.exe')) {
       aliasExeName.value += '.exe';
     }
@@ -1207,7 +1207,9 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
     
     // Build all projects before running (for both bat and exe targets)
-    await runDotnetAndCollect('build');
+    if (autoRebuild.value) {
+      await runDotnetAndCollect('build');
+    }
     
     const isTestButton = cmd === 'run' && target === 'bat';
     const isExeTest = isTestButton && isExeTestMode.value;
@@ -1337,8 +1339,8 @@ const getTargetProjectName = (targetProjectPath: string) => {
 
         await invoke('dotnet_run_start', {
           request: {
-            projectRoot: projectRoot.value,
-            startupProject: startupProject.value,
+            projectPath: projectRoot.value + '\\' + startupProject.value,
+            customMsbuildPath: customMsbuildPath.value || null,
             urls: urls.value || null,
             buildConfig: config.value,
             aliasExeName: taskAliasExeName,
@@ -1380,11 +1382,6 @@ const getTargetProjectName = (targetProjectPath: string) => {
   async function rebuild() {
     loadingTarget.value = 'rebuild';
     saveCurrentToSelectedSetupProfile();
-    if (!validatePaths()) {
-      toast.error('Please enter projectRoot and startupProject');
-      loadingTarget.value = null;
-      return;
-    }
     try {
       await runDotnetAndCollect('build');
       toast.success('All projects rebuilt with synchronized configs!');
@@ -1951,6 +1948,7 @@ ${s.content}
       sqlServer, sqlDatabase, sqlUser, sqlPassword, useWindowsAuth, 
       configTemplate, runConfigTemplate, connectionStringTemplate, 
       backlogIssueColor, backlogIssueStatusName, backlogIssueStatusColor, backlogIssueNotFound, 
+      customMsbuildPath, extraBuildArgs, autoRebuild,
       ...rest 
     } = p || {};
     const clean: any = {};
@@ -2062,9 +2060,42 @@ ${s.content}
         const idx = setupProfiles.value.findIndex(p => p.id === cpId);
         if (idx !== -1) {
           const current = setupProfiles.value[idx];
-          setupProfiles.value[idx] = { ...content, version: cpVersion, isLocalEdited: false, isExeTestMode: current.isExeTestMode, forceUnicode: current.forceUnicode ?? true, autoWatchBat: current.autoWatchBat, autoWatchTargetTest: current.autoWatchTargetTest, autoWatchTargetRun: current.autoWatchTargetRun, batFilePath: current.batFilePath, batFiles: current.batFiles };
+          setupProfiles.value[idx] = { 
+            ...content, 
+            version: cpVersion, 
+            isLocalEdited: false, 
+            isExeTestMode: current.isExeTestMode, 
+            forceUnicode: current.forceUnicode ?? true, 
+            autoWatchBat: current.autoWatchBat, 
+            autoWatchTargetTest: current.autoWatchTargetTest, 
+            autoWatchTargetRun: current.autoWatchTargetRun, 
+            batFilePath: current.batFilePath, 
+            batFiles: current.batFiles,
+            sqlServer: current.sqlServer,
+            sqlDatabase: current.sqlDatabase,
+            sqlUser: current.sqlUser,
+            sqlPassword: current.sqlPassword,
+            useWindowsAuth: current.useWindowsAuth,
+            configTemplate: current.configTemplate,
+            runConfigTemplate: current.runConfigTemplate,
+            connectionStringTemplate: current.connectionStringTemplate,
+            customMsbuildPath: current.customMsbuildPath,
+            extraBuildArgs: current.extraBuildArgs,
+            autoRebuild: current.autoRebuild ?? true
+          };
         } else {
-          setupProfiles.value.push({ ...content, version: cpVersion, isLocalEdited: false, forceUnicode: true, autoWatchBat: true, autoWatchTargetTest: false, autoWatchTargetRun: false });
+          setupProfiles.value.push({ 
+            ...content, 
+            version: cpVersion, 
+            isLocalEdited: false, 
+            forceUnicode: true, 
+            autoWatchBat: true, 
+            autoWatchTargetTest: false, 
+            autoWatchTargetRun: false,
+            customMsbuildPath: '',
+            extraBuildArgs: '/p:Configuration=Debug',
+            autoRebuild: true
+          });
         }
         
         const contentHash = getProfileHashContent(content);
@@ -2170,7 +2201,7 @@ ${s.content}
 
           if (localVer >= serverVer || !meta) {
              uiStore.syncStatus = 'saving';
-             const { sync: _sync, lastSyncedHash: _lsh, isLocalEdited: _ile, isExeTestMode: _ietm, forceUnicode: _f, autoWatchBat: _awb, autoWatchTargetTest: _awtt, autoWatchTargetRun: _awtr, sqlServer: _ss, sqlDatabase: _sdb, sqlUser: _su, sqlPassword: _sp, useWindowsAuth: _uwa, configTemplate: _ct, runConfigTemplate: _rct, connectionStringTemplate: _cst, backlogIssueColor: _bic, backlogIssueStatusName: _bisn, backlogIssueStatusColor: _bisc, backlogIssueNotFound: _binf, ...payloadToSync } = p as any;
+             const { sync: _sync, lastSyncedHash: _lsh, isLocalEdited: _ile, isExeTestMode: _ietm, forceUnicode: _f, autoWatchBat: _awb, autoWatchTargetTest: _awtt, autoWatchTargetRun: _awtr, sqlServer: _ss, sqlDatabase: _sdb, sqlUser: _su, sqlPassword: _sp, useWindowsAuth: _uwa, configTemplate: _ct, runConfigTemplate: _rct, connectionStringTemplate: _cst, backlogIssueColor: _bic, backlogIssueStatusName: _bisn, backlogIssueStatusColor: _bisc, backlogIssueNotFound: _binf, customMsbuildPath: _cmp, extraBuildArgs: _eba, autoRebuild: _ar, ...payloadToSync } = p as any;
              const result = await backlogStore.syncService!.upsertProfile({
                id: p.id,
                name: p.name,
@@ -2745,6 +2776,10 @@ console.log('[Store] watchers registered');
     }
   }, { immediate: true });
 
+  watch(customMsbuildPath, (val) => {
+    console.log('[RunnerStore] customMsbuildPath changed to:', val || 'EMPTY');
+  });
+
   watch(() => backlogStore.backlog.status, (newStatus, oldStatus) => {
     if (newStatus === 'success' && oldStatus !== 'success') {
       void syncProfilesWithCloudflare(undefined, true, false);
@@ -2764,6 +2799,7 @@ console.log('[Store] watchers registered');
       projectRoot.value, startupProject.value, config.value, urls.value, aliasExeName.value,
       batFilePath.value, runArgs.value, exeArgs.value, isExeTestMode.value,
       sqlSetupPath.value, deployPath.value, backlogProjectKey.value, backlogIssueKey.value,
+      customMsbuildPath.value, extraBuildArgs.value, autoRebuild.value,
       JSON.stringify(batFiles.value), JSON.stringify(runArgSnippets.value), JSON.stringify(exeArgSnippets.value),
       JSON.stringify(Array.from(selectedBuildProjects.value || [])), JSON.stringify(targetConfigs.value || {})
     ],
@@ -2854,6 +2890,9 @@ console.log('[Store] watchers registered');
     useWindowsAuth,
     sqlSnippets,
     activeSqlSnippetId,
+    customMsbuildPath,
+    extraBuildArgs,
+    autoRebuild,
     runArgSnippets,
     activeRunArgId,
     selectedRunArgIds,

@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "bsn_isync"
-version = "0.1.28"
+version = "0.1.29"
 dependencies = [
  "dotenvy",
  "portable-pty",

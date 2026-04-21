@@ -100,6 +100,28 @@ pub fn run_capture(mut cmd: Command) -> Result<CommandResult, String> {
     })
 }
 
+pub struct BuildTool {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+pub fn get_build_tool(custom_path: Option<&String>) -> BuildTool {
+    if let Some(path) = custom_path {
+        let p = path.trim().trim_matches('"').trim_matches('\'');
+        if !p.is_empty() {
+            return BuildTool {
+                program: p.to_string(),
+                args: vec![],
+            };
+        }
+    }
+    
+    BuildTool {
+        program: "dotnet".to_string(),
+        args: vec![],
+    }
+}
+
 pub fn get_build_config(build_config: Option<&String>) -> String {
     let cfg = build_config
         .map(|x| x.trim().to_string())

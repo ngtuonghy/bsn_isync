@@ -125,7 +125,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       cursorBlink: true,
       cursorStyle: 'bar',
       fontSize: 13,
-      fontFamily: '"JetBrains Mono", "Cascadia Code", "Fira Code", monospace',
+      fontFamily: '"JetBrainsMono Nerd Font", "CascadiaCode NF", "FiraCode Nerd Font", "JetBrains Mono", "Cascadia Code", "Fira Code", monospace',
       convertEol: true,
       allowProposedApi: true,
     });
