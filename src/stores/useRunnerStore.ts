@@ -1128,9 +1128,9 @@ const getTargetProjectName = (targetProjectPath: string) => {
     for (const proj of targets) {
       try {
         console.log('[RunnerStore] Verifying project:', proj.name, 'root:', proj.root);
+        const fullProjectPath = proj.root + '\\' + proj.startupProject;
         const state = await invoke<string>('verify_debug_output_sync', {
-          projectRoot: workspaceRoot.value, // Use workspace root to include sibling projects
-          startupProject: proj.root,
+          projectPath: fullProjectPath,
           expectedCs: expectedCs
         }).catch(err => {
            console.error(`[SyncCheck] RPC Error for ${proj.name}:`, err);
