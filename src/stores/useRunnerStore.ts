@@ -1062,60 +1062,58 @@ const getTargetProjectName = (targetProjectPath: string) => {
       console.log('[build] No targets selected, skipping build');
       return;
     }
+
+    if (mode === 'build') buildStatus.value = 'building';
     
-    for (const proj of allProjects) {
-      console.log(`[${mode}] Processing ${proj.projectPath} (${proj.config})...`);
-      
-      try {
-        console.log(`[build] Invoking dotnet_plain_command with:`, {
-           mode: mode,
-           projectPath: proj.projectPath,
-           custom_msbuild_path: customMsbuildPath.value || null,
-           buildConfig: proj.config,
-           extraArgs: extraBuildArgs.value || null,
-        });
+    try {
+      for (const proj of allProjects) {
+        console.log(`[${mode}] Processing ${proj.projectPath} (${proj.config})...`);
+        
+        try {
+          const result = await invoke<{ code: number, stdout: string, stderr: string }>('dotnet_plain_command', {
+            mode: mode,
+            projectPath: proj.projectPath,
+            customMsbuildPath: customMsbuildPath.value || null,
+            custom_msbuild_path: customMsbuildPath.value || null,
+            buildConfig: proj.config,
+            extraArgs: extraBuildArgs.value || null,
+            extra_args: extraBuildArgs.value || null,
+          });
 
-        const result = await invoke<{ code: number, stdout: string, stderr: string }>('dotnet_plain_command', {
-          mode: mode,
-          projectPath: proj.projectPath,
-          customMsbuildPath: customMsbuildPath.value || null,
-          custom_msbuild_path: customMsbuildPath.value || null,
-          buildConfig: proj.config,
-          extraArgs: extraBuildArgs.value || null,
-          extra_args: extraBuildArgs.value || null,
-        });
-
-        if (result.code !== 0) {
-           toast.error(`Build failed for ${proj.projectPath}`, { description: result.stderr || result.stdout });
-           if (mode === 'build') continue;
-        }
-
-        if (mode === 'build') {
-          try {
-            const targetContent = await invoke<string>('fetch_project_config', {
-              projectPath: proj.projectPath,
-            });
-            
-            if (targetContent) {
-              const synced = getSyncedTpl(targetContent);
-              await invoke('write_project_config_output', {
-                projectPath: proj.projectPath,
-                buildConfig: proj.config,
-                content: synced,
-              });
-              console.log(`[build] Overwrote synced config for ${proj.projectPath}`);
-            }
-          } catch (configErr) {
-            console.warn(`[build] Failed to fetch/write config for ${proj.projectPath}`, configErr);
+          if (result.code !== 0) {
+              toast.error(`Build failed for ${proj.projectPath}`, { description: result.stderr || result.stdout });
+              if (mode === 'build') continue;
           }
+
+          if (mode === 'build') {
+            try {
+              const targetContent = await invoke<string>('fetch_project_config', {
+                projectPath: proj.projectPath,
+              });
+              
+              if (targetContent) {
+                const synced = getSyncedTpl(targetContent);
+                await invoke('write_project_config_output', {
+                  projectPath: proj.projectPath,
+                  buildConfig: proj.config,
+                  content: synced,
+                });
+                console.log(`[build] Overwrote synced config for ${proj.projectPath}`);
+              }
+            } catch (configErr) {
+              console.warn(`[build] Failed to fetch/write config for ${proj.projectPath}`, configErr);
+            }
+          }
+        } catch (err: any) {
+          console.error(`[${mode}] Failed for ${proj.projectPath}:`, err);
         }
-      } catch (err: any) {
-        console.error(`[${mode}] Failed for ${proj.projectPath}:`, err);
+        
+        if (mode === 'build') {
+          await invoke('invalidate_build_fingerprint').catch(() => {});
+        }
       }
-      
-      if (mode === 'build') {
-        await invoke('invalidate_build_fingerprint').catch(() => {});
-      }
+    } finally {
+      if (mode === 'build') buildStatus.value = null;
     }
     
     await checkProjectSyncs();

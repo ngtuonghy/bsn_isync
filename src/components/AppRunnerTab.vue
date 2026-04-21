@@ -1126,12 +1126,11 @@ onMounted(async () => {
                                     :class="((runnerStore.buildStatus || runnerStore.loadingTarget === 'build') ? '' : (!runnerStore.canBuild || runnerStore.loadingTarget || runnerStore.buildStatus) ? 'text-zinc-700 cursor-not-allowed opacity-40' : 'text-zinc-500 hover:text-foreground dark:hover:text-white hover:bg-muted/50')"
                                     :disabled="!runnerStore.canBuild || !!runnerStore.loadingTarget || !!runnerStore.buildStatus"
                                     @click="runnerStore.dotnet('build')">
-                              <div :class="runnerStore.buildStatus ? 'animate-hammer-grow' : ''">
-                                <component :is="runnerStore.loadingTarget === 'build' ? RotateCcw : Hammer" 
+                               <div :class="(runnerStore.buildStatus || runnerStore.loadingTarget === 'build') ? 'animate-hammer-grow' : ''">
+                                <Hammer 
                                            :class="[
                                              'size-4 transition-all duration-300',
-                                             runnerStore.loadingTarget === 'build' ? 'animate-spin' : '',
-                                             runnerStore.buildStatus ? 'animate-hammer-hit text-[#FC6400]' : 'group-hover/btn:rotate-12 text-zinc-500'
+                                             (runnerStore.buildStatus || runnerStore.loadingTarget === 'build') ? 'animate-hammer-hit text-[#FC6400]' : 'group-hover/btn:rotate-12 text-zinc-500'
                                            ]" />
                               </div>
                               <div v-if="runnerStore.buildStatus" class="absolute size-4 bg-[#FAC000]/40 rounded-full animate-spark-pop blur-sm z-0"></div>
