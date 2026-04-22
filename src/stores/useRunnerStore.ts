@@ -965,21 +965,43 @@ const getTargetProjectName = (targetProjectPath: string) => {
       }
     }
     
-    t = t.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
+    const xmlReplaceTag = (xml: string, key: string, newValue: string) => {
+      // Ultimate XML attribute replacement: matches <add ... key="Key" ... value="..." ... />
+      // Escapes dots in keys automatically for safety
+      const escapedKey = key.replace(/\./g, '\\.');
+      
+      // Try key before value
+      const regex1 = new RegExp(`(<add\\s+[^>]*?key=["']${escapedKey}["'][^>]*?value=["'])([^"']*?)(["'][^>]*?/>)`, 'i');
+      if (regex1.test(xml)) {
+        return xml.replace(regex1, `$1${newValue}$3`);
+      }
+      
+      // Try value before key
+      const regex2 = new RegExp(`(<add\\s+[^>]*?value=["'])([^"']*?)(["'][^>]*?key=["']${escapedKey}["'][^>]*?/>)`, 'i');
+      if (regex2.test(xml)) {
+        return xml.replace(regex2, `$1${newValue}$3`);
+      }
+      
+      return xml;
+    };
+
+    t = xmlReplaceTag(t, 'Job.MsmqName', msmq);
     
     // For RUN CONFIG (EXE): use _isync bat path when forceUnicode is on
     let batPathForConfig = activeBatPath || '.\\';
     if (isRunConfig && forceUnicode.value && activeBatPath) {
       batPathForConfig = activeBatPath.replace(/\.bat$/i, '_isync.bat');
     }
-    t = t.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${batPathForConfig}$3`);
+    t = xmlReplaceTag(t, 'Job.BatFilePath', batPathForConfig);
     
     if (sqlServer.value) {
-      t = t.replace(/(<add\s+key="Report\.DBServer"\s+value=")([^"]*)("\s*\/>)/gi, `$1${sqlServer.value}$3`);
+      t = xmlReplaceTag(t, 'Report.DBServer', sqlServer.value);
     }
 
-    // Replace Execute.EnvId with dev environment value
-    t = t.replace(/(<add\s+key="Execute\.EnvId"\s+value=")([^"]*)("\s*\/>)/gi, `$1Arkbell_Dev$3`);
+    // Replace Execute.EnvId with dev environment value - ALWAYS apply this
+    t = xmlReplaceTag(t, 'Execute.EnvId', 'Arkbell_Dev');
+
+
 
     t = t.replace(new RegExp('(connectionString=")([^"]*)(")','gi'), (_match: string, pre: string, cs: string, post: string) => {
       const parts = cs.split(';').map((p: string) => p.trim()).filter((p: string) => p.length > 0);
@@ -1047,12 +1069,17 @@ const getTargetProjectName = (targetProjectPath: string) => {
     if (nRun !== runConfigTemplate.value) runConfigTemplate.value = nRun;
   }
 
-  async function runDotnetAndCollect(mode: 'restore' | 'build', silent = false) {
+  async function runDotnetAndCollect(mode: 'restore' | 'build', silent = false, extraStartupProjectRoot?: string) {
     const allProjects: { projectPath: string; config: string }[] = [];
     
-    // Build only selected projects in checkbox
+    // Build all selected projects
+    const rootsToBuild = new Set(selectedBuildProjects.value);
+    if (extraStartupProjectRoot) {
+      rootsToBuild.add(extraStartupProjectRoot);
+    }
+
     for (const discovered of discoveredProjects.value) {
-      if (discovered.startupProject && selectedBuildProjects.value.has(discovered.root)) {
+      if (discovered.startupProject && rootsToBuild.has(discovered.root)) {
         const fullPath = discovered.root + '\\' + discovered.startupProject;
         allProjects.push({
           projectPath: fullPath,
@@ -1218,9 +1245,18 @@ const getTargetProjectName = (targetProjectPath: string) => {
     }
     
     // Build all projects before running (for both bat and exe targets)
-    if (autoRebuild.value) {
-      await runDotnetAndCollect('build', true);
+    // FORCE build for Run Application (exe target) to ensure and rename works
+    if (autoRebuild.value || (cmd === 'run' && target === 'exe')) {
+      // 1. Infer the main project if needed
+      let mainProjRoot = projectRoot.value;
+      if (!mainProjRoot && selectedBuildProjects.value.size > 0) {
+        mainProjRoot = Array.from(selectedBuildProjects.value)[0];
+      }
+      
+      // 2. Build targets + explicitly build the main project if it's an exe target
+      await runDotnetAndCollect('build', true, mainProjRoot);
     }
+
     
     const isTestButton = cmd === 'run' && target === 'bat';
     const isExeTest = isTestButton && isExeTestMode.value;
@@ -1334,19 +1370,44 @@ const getTargetProjectName = (targetProjectPath: string) => {
           const m = task.batPath.match(/([^\\]+)\.bat$/i);
           if (m) {
             const msmq = m[1];
-            if (isAppRun && actualTarget !== 'test_exe') {
+            if (isAppRun) {
               taskAliasExeName = `${msmq}.exe`;
             }
+
+            const replaceTag = (xml: string, key: string, newValue: string) => {
+              const escapedKey = key.replace(/\./g, '\\.');
+              const regex1 = new RegExp(`(<add\\s+[^>]*?key=["']${escapedKey}["'][^>]*?value=["'])([^"']*?)(["'][^>]*?/>)`, 'i');
+              if (regex1.test(xml)) {
+                return xml.replace(regex1, `$1${newValue}$3`);
+              }
+              const regex2 = new RegExp(`(<add\\s+[^>]*?value=["'])([^"']*?)(["'][^>]*?key=["']${escapedKey}["'][^>]*?/>)`, 'i');
+              if (regex2.test(xml)) {
+                return xml.replace(regex2, `$1${newValue}$3`);
+              }
+              return xml;
+            };
+
             if (taskConfigTemplate) {
-              taskConfigTemplate = taskConfigTemplate.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
-              taskConfigTemplate = taskConfigTemplate.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${task.batPath}$3`);
+              taskConfigTemplate = replaceTag(taskConfigTemplate, 'Job.MsmqName', msmq);
+              taskConfigTemplate = replaceTag(taskConfigTemplate, 'Job.BatFilePath', task.batPath);
+              taskConfigTemplate = replaceTag(taskConfigTemplate, 'Execute.EnvId', 'Arkbell_Dev');
+              if (sqlServer.value) {
+                taskConfigTemplate = replaceTag(taskConfigTemplate, 'Report.DBServer', sqlServer.value);
+              }
             }
             if (taskRunConfigTemplate) {
-              taskRunConfigTemplate = taskRunConfigTemplate.replace(/(<add\s+key="Job\.MsmqName"\s+value=")([^"]*)("\s*\/>)/gi, `$1${msmq}$3`);
-              taskRunConfigTemplate = taskRunConfigTemplate.replace(/(<add\s+key="Job\.BatFilePath"\s+value=")([^"]*)("\s*\/>)/gi, `$1${task.batPath}$3`);
+              taskRunConfigTemplate = replaceTag(taskRunConfigTemplate, 'Job.MsmqName', msmq);
+              taskRunConfigTemplate = replaceTag(taskRunConfigTemplate, 'Job.BatFilePath', task.batPath);
+              taskRunConfigTemplate = replaceTag(taskRunConfigTemplate, 'Execute.EnvId', 'Arkbell_Dev');
+              if (sqlServer.value) {
+                taskRunConfigTemplate = replaceTag(taskRunConfigTemplate, 'Report.DBServer', sqlServer.value);
+              }
             }
           }
         }
+
+
+
 
         let effectiveProjectPath = projectRoot.value + '\\' + startupProject.value;
         
@@ -1356,6 +1417,21 @@ const getTargetProjectName = (targetProjectPath: string) => {
           const proj = discoveredProjects.value.find(p => p.root === firstRoot);
           if (proj) {
             effectiveProjectPath = proj.root + '\\' + proj.startupProject;
+          }
+        }
+
+        // DIRECT WRITE: Write run config (exe) template to RBA alias config BEFORE dotnet_run_start
+        if (isAppRun && taskRunConfigTemplate && taskRunConfigTemplate.trim()) {
+          try {
+            const msg = await invoke<string>('write_rba_run_config', {
+              startupProjectPath: effectiveProjectPath,
+              aliasExeName: taskAliasExeName,
+              buildConfig: config.value,
+              content: taskRunConfigTemplate,
+            });
+            console.log('[Run] RBA config written:', msg);
+          } catch (e) {
+            console.warn('[Run] Failed to write RBA run config:', e);
           }
         }
 
