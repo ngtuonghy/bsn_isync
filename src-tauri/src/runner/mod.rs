@@ -206,81 +206,29 @@ pub fn copy_alias_exe_and_config(
     
     let config_path = dst.with_extension("exe.config");
     
-    // Use App.config from project directory as base
-    let app_config_path = project_dir.join("App.config");
-    let base_config = if app_config_path.exists() {
-        fs::read_to_string(&app_config_path).unwrap_or_else(|_| String::new())
-    } else {
-        String::new()
-    };
-    
-    // If no base config, use template directly
-    let template = if base_config.is_empty() {
-        config_template
-            .or(run_config_template)
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-            .unwrap_or_else(|| build_default_config_template(&alias, bat_file_path.map(|s| s.as_str()).unwrap_or("")))
-    } else {
-        // Get the template to use (prefer config_template, fallback to run_config_template)
-        let template_src = config_template.or(run_config_template);
-        
-        if use_app_config {
-            // Bat target: use template as base, replace connectionStrings from App.config
-            let mut result = template_src
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .unwrap_or_else(|| base_config.clone());
-            
-            // Replace connectionStrings from base (App.config)
-            if let Some(cs_start) = base_config.find("<connectionStrings>") {
-                if let Some(cs_end) = base_config.find("</connectionStrings>") {
-                    let cs_section = &base_config[cs_start..cs_end + 19];
-                    if let Some(result_cs_start) = result.find("<connectionStrings>") {
-                        if let Some(result_cs_end) = result.find("</connectionStrings>") {
-                            result = format!("{}{}{}", &result[..result_cs_start], cs_section, &result[result_cs_end + 19..]);
-                        }
-                    }
+    // The frontend's getSyncedTpl already produces a fully-processed config with all overrides
+    // (MsmqName, BatFilePath, EnvId, connectionStrings, SQL server/db, etc.)
+    // Just use it directly - no merging needed.
+    let final_config = config_template
+        .or(run_config_template)
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .unwrap_or_else(|| {
+            // Fallback: if no template from frontend, try to copy the built .exe.config
+            let source_config_path = src_canon.with_extension("exe.config");
+            if source_config_path.exists() {
+                fs::read_to_string(&source_config_path).unwrap_or_else(|_| String::new())
+            } else {
+                let app_config_path = project_dir.join("App.config");
+                if app_config_path.exists() {
+                    fs::read_to_string(&app_config_path).unwrap_or_default()
+                } else {
+                    build_default_config_template(&alias, bat_file_path.map(|s| s.as_str()).unwrap_or(""))
                 }
             }
-            result
-        } else {
-            // Exe target: use App.config as base, replace Job.MsmqName/Job.BatFilePath from template
-            let mut result = base_config.clone();
-            
-            if let Some(t) = template_src {
-                // Replace Job.MsmqName
-                if let Some(start) = t.find("Job.MsmqName") {
-                    let line_start = t[..start].rfind("<add key=").map(|i| t[i..].find("/>").map(|e| i + e + 2)).flatten();
-                    if let Some(ls) = line_start {
-                        let new_line = &t[ls..ls + t[ls..].find("/>").unwrap_or(0) + 2];
-                        if let Some(bi) = result.rfind("Job.MsmqName") {
-                            let bls = result[..bi].rfind("<add key=").map(|i| result[i..].find("/>").map(|e| i + e + 2)).flatten();
-                            if let Some(bl) = bls {
-                                result = format!("{}{}{}", &result[..bl], new_line, &result[bl + result[bl..].find("/>").unwrap_or(0) + 2..]);
-                            }
-                        }
-                    }
-                }
-                // Replace Job.BatFilePath
-                if let Some(start) = t.find("Job.BatFilePath") {
-                    let line_start = t[..start].rfind("<add key=").map(|i| t[i..].find("/>").map(|e| i + e + 2)).flatten();
-                    if let Some(ls) = line_start {
-                        let new_line = &t[ls..ls + t[ls..].find("/>").unwrap_or(0) + 2];
-                        if let Some(bi) = result.rfind("Job.BatFilePath") {
-                            let bls = result[..bi].rfind("<add key=").map(|i| result[i..].find("/>").map(|e| i + e + 2)).flatten();
-                            if let Some(bl) = bls {
-                                result = format!("{}{}{}", &result[..bl], new_line, &result[bl + result[bl..].find("/>").unwrap_or(0) + 2..]);
-                            }
-                        }
-                    }
-                }
-            }
-            result
-        }
-    };
+        });
     
-    fs::write(&config_path, template).map_err(|e| format!("Failed to write config file: {e}"))?;
+    fs::write(&config_path, final_config).map_err(|e| format!("Failed to write config file: {e}"))?;
     Ok(Some(format!(
         "Copied {} -> {}\nWrote config {}",
         normalize_path(&src_canon),
@@ -303,15 +251,19 @@ fn resolve_csproj_output_dir(csproj_path: &Path, config: &str) -> PathBuf {
                 };
             }
             if line.contains("<OutputPath>") && condition_matches {
-                if let Some(s_pos) = line.find("<OutputPath>") {
-                    let s = s_pos + 12;
-                    let e = line.find("</OutputPath>").unwrap_or(line.len());
-                    if e > s {
-                        let output_path = line[s..e].trim();
-                        return project_dir.join(output_path.replace('\\', "/"));
+                let parts: Vec<&str> = line.split("<OutputPath>").collect();
+                if parts.len() > 1 {
+                    let subparts: Vec<&str> = parts[1].split("</OutputPath>").collect();
+                    if subparts.len() > 0 {
+                        let output_path = subparts[0].trim();
+                        if !output_path.is_empty() {
+                            return project_dir.join(output_path.replace('\\', "/"));
+                        }
                     }
                 }
             }
+
+
         }
     }
     project_dir.join("bin").join(config)
@@ -381,6 +333,9 @@ fn copy_rba_exe_with_config(
 
     // Write config
     let config_path = dest_exe.with_extension("exe.config");
+    println!("[RBA Config] Writing config to: {}", config_path.display());
+    println!("[RBA Config] Content length: {} bytes", config_content.len());
+    println!("[RBA Config] First 200 chars: {}", &config_content[..config_content.len().min(200)]);
     fs::write(&config_path, config_content).map_err(|e| format!("Failed to write RBA config: {e}"))?;
 
     Ok(format!(
@@ -793,7 +748,7 @@ pub fn dotnet_run_start(
 
     let mut actual_bat_path = request.bat_file_path.clone();
     let config_template = request.config_template.clone();
-    let run_config_template = request.run_config_template.clone();
+    let mut run_config_template = request.run_config_template.clone();
 
     {
         let mut guard = state.0.lock().map_err(|_| "State bị lock lỗi".to_string())?;
@@ -820,18 +775,25 @@ pub fn dotnet_run_start(
             }
             let _ = app.emit("build-status", "done");
         } else if is_exe {
-            if let Some(ct) = config_template.as_ref().filter(|s| !s.trim().is_empty()) {
-                match write_config_for_project(&project_abs, &config, ct) {
-                    Ok(msg) => { let _ = app.emit("runner-log", msg); },
-                    Err(e) => { let _ = app.emit("runner-log", format!("[WARN] Config write failed: {}", e)); },
-                }
+            // For RUN targets (non-test), prefer run_config_template if available for the startup project too
+            let is_test = request.target.as_deref() == Some("test_exe");
+            let ct_to_use = if !is_test && run_config_template.is_some() {
+                run_config_template.as_ref()
+            } else {
+                config_template.as_ref()
+            };
+
+            if let Some(ct) = ct_to_use.filter(|s| !s.trim().is_empty()) {
+                let _ = write_config_for_project(&project_abs, &config, ct);
             }
             
+            // Handle RBA aliasing and config writing
             if let Some(rba) = get_receive_batch_action(&project_abs) {
                 let rba_alias = request.alias_exe_name.as_ref()
                     .map(|x| x.trim().to_string())
                     .filter(|x| !x.is_empty())
                     .unwrap_or_else(|| "JE5912.exe".to_string());
+                
                 if let Some(rct) = run_config_template.as_ref().filter(|s| !s.trim().is_empty()) {
                     match copy_rba_exe_with_config(&rba, &config, &rba_alias, rct) {
                         Ok(msg) => { let _ = app.emit("runner-log", msg); },
@@ -841,6 +803,7 @@ pub fn dotnet_run_start(
             }
             let _ = app.emit("build-status", "done");
         }
+
     }
     // test_exe: no config copy needed
 
@@ -904,20 +867,13 @@ pub fn dotnet_run_start(
                                         .map(|x| x.trim().to_string())
                                         .filter(|x| !x.is_empty())
                                         .unwrap_or_else(|| "JE5912.exe".to_string());
-                                    if let Some(ref rct) = run_config_template {
+                                    if let Some(rct) = run_config_template.as_ref() {
                                         // Update Job.BatFilePath in the config to point to _isync bat
-                                        let updated_rct = rct.replace(
+                                        let updated = rct.replace(
                                             &format!("value=\"{}\"", bat_str),
                                             &format!("value=\"{}\"", new_bat_str)
                                         );
-                                        let output_dir = resolve_csproj_output_dir(&rba, &config);
-                                        let mut alias = rba_alias.clone();
-                                        if !alias.to_ascii_lowercase().ends_with(".exe") {
-                                            alias.push_str(".exe");
-                                        }
-                                        let dest_exe = output_dir.join(&alias);
-                                        let config_path = dest_exe.with_extension("exe.config");
-                                        let _ = fs::write(&config_path, &updated_rct);
+                                        run_config_template = Some(updated);
                                     }
                                 }
                             }
@@ -954,19 +910,33 @@ pub fn dotnet_run_start(
     if let Ok(content) = fs::read_to_string(run_project_abs) {
         let mut condition_matches = true;
         for line in content.lines() {
-            if line.contains("<PropertyGroup") {
-                if line.contains("Condition=") {
-                    condition_matches = line.contains(&config);
+            let l_lower = line.to_lowercase();
+            if l_lower.contains("<propertygroup") {
+                if l_lower.contains("condition=") {
+                    condition_matches = l_lower.contains(&config.to_lowercase());
                 } else {
                     condition_matches = true;
                 }
             }
-            if line.contains("<OutputPath>") {
-                if condition_matches {
-                    let s = line.find("<OutputPath>").unwrap() + 12;
-                    let e = line.find("</OutputPath>").unwrap_or(line.len());
-                    custom_out = Some(line[s..e].trim().to_string());
-                    break;
+            if condition_matches && l_lower.contains("<outputpath>") {
+                let parts: Vec<&str> = l_lower.split("<outputpath>").collect();
+                if parts.len() > 1 {
+                    let subparts: Vec<&str> = parts[1].split("</outputpath>").collect();
+                    if subparts.len() > 0 {
+                        // Extract from the ORIGINAL line to preserve casing
+                        let start_tag = "<OutputPath>";
+                        let end_tag = "</OutputPath>";
+                        if let Some(start_idx) = line.find(start_tag) {
+                            if let Some(end_idx) = line.find(end_tag) {
+                                let val = &line[start_idx + start_tag.len()..end_idx];
+                                custom_out = Some(val.trim().to_string());
+                                break;
+                            }
+                        }
+                        // Fallback to lowercase if case-sensitive match fails (unlikely in valid XML)
+                        custom_out = Some(subparts[0].trim().to_string());
+                        break;
+                    }
                 }
             }
         }
@@ -987,24 +957,48 @@ pub fn dotnet_run_start(
     let final_alias = if alias.is_empty() {
         source_exe_name.clone()
     } else {
-        alias.clone()
+        let mut a = alias.clone();
+        if !a.to_ascii_lowercase().ends_with(".exe") {
+            a.push_str(".exe");
+        }
+        a
     };
     
+    // Determine the source EXE path (the one built by dotnet)
+    let source_exe_path = if let Some(ref p) = custom_out {
+        project_dir.join(p.replace('\\', "/")).join(&source_exe_name)
+    } else {
+        project_dir.join("bin").join(&config).join(&source_exe_name)
+    };
+
+    // Determine the destination EXE path (where we want to run it from, potentially aliased)
     let exe_path = dst_dir.join(&final_alias);
     
-    let exe_path = if exe_path.exists() {
-        exe_path
-    } else {
-        if let Some(p) = custom_out {
-            project_dir.join(p.replace('\\', "/")).join(&source_exe_name)
-        } else {
-            project_dir.join("bin").join(&config).join(&source_exe_name)
+    // AUTO-COPY/RENAME LOGIC: If we have an alias and it's different from the source, copy the EXE
+    if source_exe_path.exists() && source_exe_path != exe_path {
+        // Ensure destination directory exists
+        if let Some(parent) = exe_path.parent() {
+            let _ = fs::create_dir_all(parent);
         }
-    };
+        // Copy the EXE
+        let _ = fs::copy(&source_exe_path, &exe_path);
+    }
+    
+    // FINAL CONFIG WRITE: Ensure the config is written to the destination (potentially aliased)
+    // using the best template we have (either from RBA, force_unicode, or original request)
+    let dest_config = exe_path.with_extension("exe.config");
+    if let Some(rct) = run_config_template.as_ref().filter(|s| !s.trim().is_empty()) {
+        let _ = fs::write(&dest_config, rct);
+    } else if source_exe_path.exists() && source_exe_path != exe_path {
+        let source_config = source_exe_path.with_extension("exe.config");
+        if source_config.exists() {
+             let _ = fs::copy(&source_config, &dest_config);
+        }
+    }
+
 
     let run_args = request.run_args.as_deref().unwrap_or("").trim();
     let target = request.target.as_deref().unwrap_or("exe");
-    
     let cmd_str = if target == "bat" {
         if let Some(bat_path_str) = actual_bat_path.as_ref().filter(|s| !s.trim().is_empty()) {
             let mut final_path = bat_path_str.clone();
@@ -1016,18 +1010,19 @@ pub fn dotnet_run_start(
                         guard.temp_files.push(final_path.clone());
                     }
                 }
-            } else if final_path.ends_with("_isync.bat") {
             }
 
-let original_bat_path = std::path::Path::new(bat_path_str);
+            let original_bat_path = std::path::Path::new(bat_path_str);
             let parent = original_bat_path.parent().and_then(|p| p.to_str()).unwrap_or("");
-            let stem = original_bat_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let escaped_path = final_path.replace('\'', "''");
             
+            // Normalize paths for PowerShell (must use backslashes for local execution consistency)
+            let final_path_win = final_path.replace('/', "\\");
+            let parent_win = parent.replace('/', "\\");
+
             // Delete _isync.bat when test finishes, but skip if app is running
             let is_running = request.is_app_running.unwrap_or(false);
-            let cleanup = if final_path.ends_with("_isync.bat") && !stem.is_empty() && !is_running {
-                format!("\r\nRemove-Item '{}' -Force -ErrorAction SilentlyContinue", escaped_path)
+            let cleanup = if final_path.ends_with("_isync.bat") && !is_running {
+                format!("\r\nRemove-Item '{}' -Force -ErrorAction SilentlyContinue", final_path_win.replace('\'', "''"))
             } else {
                 String::new()
             };
@@ -1037,17 +1032,17 @@ let original_bat_path = std::path::Path::new(bat_path_str);
                 cmd.push_str("chcp 932 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(932); ");
             }
 
-            if !parent.is_empty() {
+            if !parent_win.is_empty() {
                 if run_args.is_empty() {
-                    cmd.push_str(&format!("cd '{}'; & '{}'{}\r\n", parent, final_path, cleanup));
+                    cmd.push_str(&format!("cd '{}'; & '{}'{}\r\n", parent_win, final_path_win, cleanup));
                 } else {
-                    cmd.push_str(&format!("cd '{}'; & '{}' {}{}\r\n", parent, final_path, run_args, cleanup));
+                    cmd.push_str(&format!("cd '{}'; & '{}' {}{}\r\n", parent_win, final_path_win, run_args, cleanup));
                 }
             } else {
                 if run_args.is_empty() {
-                    cmd.push_str(&format!("& '{}'{}\r\n", final_path, cleanup));
+                    cmd.push_str(&format!("& '{}'{}\r\n", final_path_win, cleanup));
                 } else {
-                    cmd.push_str(&format!("& '{}' {}{}\r\n", final_path, run_args, cleanup));
+                    cmd.push_str(&format!("& '{}' {}{}\r\n", final_path_win, run_args, cleanup));
                 }
             }
             cmd
@@ -1055,19 +1050,18 @@ let original_bat_path = std::path::Path::new(bat_path_str);
             return Err("BAT file path not configured for Test action".to_string());
         }
     } else {
-        let exe_path_to_run = exe_path.clone();
+        // Normalize exe path to use backslashes for PowerShell
+        let exe_path_to_run = exe_path.to_string_lossy().to_string().replace('/', "\\");
         let mut cmd = String::new();
         if request.force_unicode.unwrap_or(false) {
             cmd.push_str("chcp 932 >$null; [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(932); ");
         }
 
-        // Build cleanup command for _isync.bat temp file (created by force_unicode)
-        let cleanup = String::new(); // Manual cleanup removed (relying on temp_files + stop)
-
+        let cleanup = String::new(); 
         if run_args.is_empty() {
-            cmd.push_str(&format!("& '{}'{}\r\n", exe_path_to_run.display(), cleanup));
+            cmd.push_str(&format!("& '{}'{}\r\n", exe_path_to_run, cleanup));
         } else {
-            cmd.push_str(&format!("& '{}' {}{}\r\n", exe_path_to_run.display(), run_args, cleanup));
+            cmd.push_str(&format!("& '{}' {}{}\r\n", exe_path_to_run, run_args, cleanup));
         }
         cmd
     };
@@ -1392,6 +1386,53 @@ pub fn invalidate_build_fingerprint(
     Ok(())
 }
 
+/// Dead-simple: write frontend config directly to {alias}.exe.config in RBA output dir
+#[tauri::command]
+pub fn write_rba_run_config(
+    startup_project_path: String,
+    alias_exe_name: String,
+    build_config: String,
+    content: String,
+) -> Result<String, String> {
+    let startup_abs = normalize_input_path(&startup_project_path);
+    if !startup_abs.exists() {
+        return Err(format!("Startup project not found: {}", startup_project_path));
+    }
+    
+    let rba = get_receive_batch_action(&startup_abs)
+        .ok_or_else(|| "RBA project not found".to_string())?;
+    
+    let config = get_build_config(Some(&build_config));
+    let output_dir = resolve_csproj_output_dir(&rba, &config);
+    
+    let mut alias = alias_exe_name.trim().to_string();
+    if alias.is_empty() {
+        alias = "JE5912.exe".to_string();
+    }
+    if !alias.to_ascii_lowercase().ends_with(".exe") {
+        alias.push_str(".exe");
+    }
+    
+    // Also copy the RBA exe to alias name if source exists
+    let source_name = rba.file_stem().and_then(|s| s.to_str())
+        .map(|s| format!("{}.exe", s))
+        .unwrap_or_default();
+    let source_exe = output_dir.join(&source_name);
+    let dest_exe = output_dir.join(&alias);
+    
+    if source_exe.exists() && source_exe != dest_exe {
+        fs::create_dir_all(&output_dir).ok();
+        let _ = fs::copy(&source_exe, &dest_exe);
+    }
+    
+    // Write config directly
+    let config_path = dest_exe.with_extension("exe.config");
+    fs::create_dir_all(&output_dir).map_err(|e| format!("Cannot create dir: {e}"))?;
+    fs::write(&config_path, content.as_bytes()).map_err(|e| format!("Failed to write config: {e}"))?;
+    
+    Ok(format!("Wrote config: {}", normalize_path(&config_path)))
+}
+
 #[tauri::command]
 pub fn write_project_config_output(project_path: String, build_config: String, content: String) -> Result<String, String> {
     let path = normalize_input_path(&project_path);
@@ -1434,8 +1475,7 @@ pub fn verify_debug_output_sync(project_path: String, expected_cs: String) -> Re
     if let Ok(content) = fs::read_to_string(&project_abs) {
         let mut in_debug_group = false;
         for line in content.lines() {
-            let l = line.trim();
-            let l_lower = l.to_lowercase();
+            let l_lower = line.to_lowercase();
             if l_lower.contains("<propertygroup") {
                 if l_lower.contains("condition=") {
                     in_debug_group = l_lower.contains(&config.to_lowercase());
@@ -1444,27 +1484,45 @@ pub fn verify_debug_output_sync(project_path: String, expected_cs: String) -> Re
                 }
             }
             if in_debug_group {
+                let l_lower = line.to_lowercase();
                 if l_lower.contains("<outputpath>") {
-                    if let Some(s_pos) = l_lower.find("<outputpath>") {
-                        let s = s_pos + 12;
-                        let e = l_lower.find("</outputpath>").unwrap_or(l.len());
-                        if e > s {
-                            output_path = l[s..e].trim().to_string();
+                    let start_tag = "<OutputPath>";
+                    let end_tag = "</OutputPath>";
+                    if let Some(start_idx) = line.find(start_tag) {
+                        if let Some(end_idx) = line.find(end_tag) {
+                            output_path = line[start_idx + start_tag.len()..end_idx].trim().to_string();
+                        }
+                    } else {
+                        // Fallback to split if case-sensitive match fails
+                        let parts: Vec<&str> = l_lower.split("<outputpath>").collect();
+                        if parts.len() > 1 {
+                            if let Some(val) = parts[1].split("</outputpath>").next() {
+                                output_path = val.trim().to_string();
+                            }
                         }
                     }
                 }
                 if l_lower.contains("<assemblyname>") {
-                    if let Some(s_pos) = l_lower.find("<assemblyname>") {
-                        let s = s_pos + 14;
-                        let e = l_lower.find("</assemblyname>").unwrap_or(l.len());
-                        if e > s {
-                            assembly_name = l[s..e].trim().to_string();
+                    let start_tag = "<AssemblyName>";
+                    let end_tag = "</AssemblyName>";
+                    if let Some(start_idx) = line.find(start_tag) {
+                        if let Some(end_idx) = line.find(end_tag) {
+                            assembly_name = line[start_idx + start_tag.len()..end_idx].trim().to_string();
+                        }
+                    } else {
+                        let parts: Vec<&str> = l_lower.split("<assemblyname>").collect();
+                        if parts.len() > 1 {
+                            if let Some(val) = parts[1].split("</assemblyname>").next() {
+                                assembly_name = val.trim().to_string();
+                            }
                         }
                     }
                 }
             }
+
         }
     }
+
 
     if output_path.is_empty() {
         output_path = format!("bin/{}", config);

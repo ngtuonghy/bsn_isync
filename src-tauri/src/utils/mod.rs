@@ -230,9 +230,14 @@ pub fn top_group_root(_root: &Path, file: &Path) -> PathBuf {
 }
 
 pub fn get_receive_batch_action(startup_abs: &Path) -> Option<PathBuf> {
+    let s_lower = startup_abs.to_string_lossy().to_lowercase();
+    if s_lower.contains("arkbell.console.receivebatchaction") && s_lower.ends_with(".csproj") {
+        return Some(startup_abs.to_path_buf());
+    }
+
     let parent = startup_abs.parent()?.parent()?;
     let rba_path = parent.join("Arkbell.Console.ReceiveBatchAction").join("Arkbell.Console.ReceiveBatchAction.csproj");
-    if rba_path.exists() && rba_path != startup_abs {
+    if rba_path.exists() {
         Some(rba_path)
     } else {
         None

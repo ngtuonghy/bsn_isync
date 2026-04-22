@@ -106,7 +106,8 @@ pub fn run() {
             sql_mod::sql_execute_async,
             runner::dotnet_plain_command,
             runner::write_project_config_output,
-            runner::verify_debug_output_sync
+            runner::verify_debug_output_sync,
+            runner::write_rba_run_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
