@@ -1,6 +1,6 @@
 [package]
 name = "bsn_isync"
-version = "0.1.32"
+version = "0.1.33"
 description = "A tool to sync Backlog and local tasks"
 authors = ["ngtuonhy"]
 edition = "2021"
